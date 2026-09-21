@@ -1,0 +1,185 @@
+====================================================================
+MATERI UJIAN PRAKTIK: DASHBOARD & CRUD DATA BARANG (MVC NATIVE)
+====================================================================
+Syarat: Sistem Login (AuthController & UserModel) sudah harus selesai lebih dulu.
+
+--- 1. DATABASE (phpMyAdmin) ---
+Buka tab SQL di database lu, jalankan kode ini untuk bikin tabel barang:
+
+CREATE TABLE barang (
+    id_barang INT AUTO_INCREMENT PRIMARY KEY,
+    nama_barang VARCHAR(100) NOT NULL,
+    jumlah INT NOT NULL,
+    kondisi VARCHAR(50) NOT NULL
+);
+
+--- 2. MODEL (models/BarangModel.php) ---
+Fungsi: Otak yang ngobrol langsung sama database (Select, Insert, Update, Delete).
+
+<?php
+class BarangModel {
+    private $db;
+
+    public function __construct($koneksi) {
+        $this->db = $koneksi;
+    }
+
+    public function getSemuaBarang() {
+        return $this->db->query("SELECT * FROM barang ORDER BY id_barang DESC");
+    }
+
+    public function getBarangById($id_barang) {
+        $id_barang = (int)$id_barang;
+        $hasil = $this->db->query("SELECT * FROM barang WHERE id_barang = $id_barang");
+        return $hasil->fetch_assoc();
+    }
+
+    public function tambahBarang($nama, $jumlah, $kondisi) {
+        $nama = mysqli_real_escape_string($this->db, $nama);
+        $kondisi = mysqli_real_escape_string($this->db, $kondisi);
+        return $this->db->query("INSERT INTO barang (nama_barang, jumlah, kondisi) VALUES ('$nama', '$jumlah', '$kondisi')");
+    }
+
+    public function updateBarang($id_barang, $nama, $jumlah, $kondisi) {
+        $id_barang = (int)$id_barang;
+        $nama = mysqli_real_escape_string($this->db, $nama);
+        $kondisi = mysqli_real_escape_string($this->db, $kondisi);
+        return $this->db->query("UPDATE barang SET nama_barang = '$nama', jumlah = '$jumlah', kondisi = '$kondisi' WHERE id_barang = $id_barang");
+    }
+
+    public function hapusBarang($id_barang) {
+        $id_barang = (int)$id_barang;
+        return $this->db->query("DELETE FROM barang WHERE id_barang = $id_barang");
+    }
+}
+?>
+
+--- 3. CONTROLLER (controllers/BarangController.php) ---
+Fungsi: Polisi pengatur lalu lintas data antara View dan Model.
+
+<?php
+require_once 'models/BarangModel.php';
+
+class BarangController {
+    private $model;
+
+    public function __construct($koneksi) {
+        $this->model = new BarangModel($koneksi);
+    }
+
+    public function index() {
+        $data_barang = $this->model->getSemuaBarang();
+        require_once 'views/barang.php';
+    }
+
+    public function tambah() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $nama = $_POST['nama_barang'];
+            $jumlah = $_POST['jumlah'];
+            $kondisi = $_POST['kondisi'];
+            if ($this->model->tambahBarang($nama, $jumlah, $kondisi)) {
+                header("Location: index.php?page=barang&pesan=sukses_tambah");
+                exit;
+            }
+        }
+        require_once 'views/tambah_barang.php';
+    }
+
+    public function edit() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $id_barang = $_POST['id_barang'];
+            $nama = $_POST['nama_barang'];
+            $jumlah = $_POST['jumlah'];
+            $kondisi = $_POST['kondisi'];
+            if ($this->model->updateBarang($id_barang, $nama, $jumlah, $kondisi)) {
+                header("Location: index.php?page=barang&pesan=sukses_edit");
+                exit;
+            }
+        } else {
+            if (isset($_GET['id'])) {
+                $id_barang = $_GET['id'];
+                $barang_edit = $this->model->getBarangById($id_barang);
+                require_once 'views/edit_barang.php';
+            } else {
+                header("Location: index.php?page=barang");
+                exit;
+            }
+        }
+    }
+
+    public function hapus() {
+        if (isset($_GET['id'])) {
+            $this->model->hapusBarang($_GET['id']);
+        }
+        header("Location: index.php?page=barang&pesan=sukses_hapus");
+        exit;
+    }
+}
+?>
+
+--- 4. VIEWS (Tampilan) ---
+
+A. views/dashboard.php (Halaman Welcome)
+- Berisi session_start(), cek $_SESSION['is_login'], dan tag HTML Bootstrap.
+- Berisi Navbar dengan link ke index.php?page=dashboard dan index.php?page=barang.
+
+B. views/barang.php (Tabel Data)
+- Berisi struktur tabel HTML.
+- Looping data dari Controller: while($row = $data_barang->fetch_assoc()) { ... }
+- Link Tombol Edit: href="index.php?page=edit_barang&id=<?php echo $row['id_barang']; ?>"
+- Link Tombol Hapus: href="index.php?page=hapus_barang&id=<?php echo $row['id_barang']; ?>"
+
+C. views/tambah_barang.php (Form Tambah)
+- Form dengan action="index.php?page=tambah_barang" method="POST".
+- Input text (nama), number (jumlah), dan select (kondisi).
+
+D. views/edit_barang.php (Form Edit)
+- Form dengan action="index.php?page=edit_barang" method="POST".
+- WAJIB ADA: <input type="hidden" name="id_barang" value="<?php echo $barang_edit['id_barang']; ?>">
+- Menampilkan data lama di input: value="<?php echo $barang_edit['nama_barang']; ?>"
+
+--- 5. ROUTER (index.php) ---
+Fungsi: Mendaftarkan semua URL agar mengarah ke Controller yang tepat.
+*(Catatan: pastikan case 'edit_barang' ditaruh SEBELUM 'default:' agar rapi)*
+
+<?php
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+require_once 'controllers/BarangController.php'; 
+
+$auth = new AuthController($koneksi);
+$barang = new BarangController($koneksi); 
+
+$page = isset($_GET['page']) ? $_GET['page'] : '';
+
+switch ($page) {
+    case 'dashboard':
+        require_once 'views/dashboard.php';
+        break;
+        
+    case 'barang':
+        $barang->index(); 
+        break;
+        
+    case 'tambah_barang':
+        $barang->tambah(); 
+        break;
+        
+    case 'edit_barang':
+        $barang->edit(); 
+        break;
+        
+    case 'hapus_barang':
+        $barang->hapus(); 
+        break;
+        
+    case 'logout':
+        $auth->logout();
+        break;
+
+    default:
+        $auth->login();
+        break;
+}
+?>
+====================================================================

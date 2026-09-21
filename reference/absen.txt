@@ -1,0 +1,233 @@
+====================================================================
+MATERI UJIAN PRAKTIK: SISTEM ABSENSI KELAS MATRIX 1-30 (MVC NATIVE)
+====================================================================
+Deskripsi: Sistem ini menampilkan daftar siswa dengan kolom tanggal 1 sampai 30 ke samping. Guru bisa mengubah status (H/I/S/A) langsung dari tabel dan menyimpan semuanya sekaligus dengan satu tombol.
+
+--- 1. DATABASE (phpMyAdmin) ---
+Jalankan kode SQL ini untuk membuat tabel siswa, tabel kehadiran, dan MENGUNCI data agar tidak ganda (duplikat) di tanggal yang sama.
+
+-- Tabel data siswa
+CREATE TABLE siswa (
+    id_siswa INT AUTO_INCREMENT PRIMARY KEY,
+    nama_siswa VARCHAR(100) NOT NULL
+);
+
+-- Tabel data kehadiran
+CREATE TABLE kehadiran (
+    id_hadir INT AUTO_INCREMENT PRIMARY KEY,
+    id_siswa INT NOT NULL,
+    tanggal DATE NOT NULL,
+    status ENUM('H', 'I', 'S', 'A') NOT NULL
+);
+
+-- KUNCI PENTING: Mencegah 1 siswa punya 2 absen di hari yang sama
+ALTER TABLE kehadiran ADD UNIQUE KEY unique_absen (id_siswa, tanggal);
+
+-- Data Dummy Siswa
+INSERT INTO siswa (nama_siswa) VALUES 
+('Rixsan Joulfiand'), ('Budi Santoso'), ('Siti Aminah'), ('Joko Widodo'), ('Ayu Lestari');
+
+--- 2. MODEL (models/AbsensiModel.php) ---
+Fungsi: Membentuk array dari tanggal 1-30 (Pivot) dan fungsi canggih ON DUPLICATE KEY UPDATE untuk menimpa data yang sudah ada.
+
+<?php
+class AbsensiModel {
+    private $db;
+
+    public function __construct($koneksi) {
+        $this->db = $koneksi;
+    }
+
+    public function getRekapBulanan() {
+        $rekap = [];
+        
+        // 1. Siapkan kerangka array 1-30 untuk semua siswa
+        $query_siswa = $this->db->query("SELECT * FROM siswa ORDER BY id_siswa ASC");
+        while($s = $query_siswa->fetch_assoc()) {
+            $id = $s['id_siswa'];
+            $rekap[$id] = [
+                'nama' => $s['nama_siswa'],
+                'absen' => array_fill(1, 30, '-') 
+            ];
+        }
+
+        // 2. Ambil absen bulan ini, lalu timpa tanda strip (-) dengan H/I/S/A
+        $query_absen = $this->db->query("SELECT id_siswa, DAY(tanggal) as tgl, status FROM kehadiran WHERE MONTH(tanggal) = MONTH(CURDATE()) AND YEAR(tanggal) = YEAR(CURDATE())");
+        while($a = $query_absen->fetch_assoc()) {
+            $id = $a['id_siswa'];
+            $tgl = (int)$a['tgl'];
+            if(isset($rekap[$id]) && $tgl <= 30) {
+                $rekap[$id]['absen'][$tgl] = $a['status'];
+            }
+        }
+        return $rekap;
+    }
+
+    // Fungsi Insert / Update dalam 1 perintah SQL
+    public function simpanAtauUpdateAbsen($id_siswa, $tanggal, $status) {
+        $id_siswa = (int)$id_siswa;
+        $query = "INSERT INTO kehadiran (id_siswa, tanggal, status) 
+                  VALUES ($id_siswa, '$tanggal', '$status') 
+                  ON DUPLICATE KEY UPDATE status = '$status'";
+        return $this->db->query($query);
+    }
+
+    public function hapusAbsenMatrix($id_siswa, $tanggal) {
+        $id_siswa = (int)$id_siswa;
+        return $this->db->query("DELETE FROM kehadiran WHERE id_siswa = $id_siswa AND tanggal = '$tanggal'");
+    }
+}
+?>
+
+--- 3. CONTROLLER (controllers/AbsensiController.php) ---
+Fungsi: Menangkap ratusan data dari form (array multi-dimensi) lalu memecahnya pakai foreach.
+
+<?php
+require_once 'models/AbsensiModel.php';
+
+class AbsensiController {
+    private $model;
+
+    public function __construct($koneksi) {
+        $this->model = new AbsensiModel($koneksi);
+    }
+
+    public function index() {
+        $data_rekap = $this->model->getRekapBulanan();
+        require_once 'views/rekap_absensi.php';
+    }
+
+    public function simpanMatrix() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $bulan_ini = date('Y-m'); // Format YYYY-MM
+            $data_absen = $_POST['absen'];
+            
+            foreach ($data_absen as $id_siswa => $tanggal_data) {
+                foreach ($tanggal_data as $tgl => $status) {
+                    // Gabungkan tahun, bulan, dan tanggal
+                    $tgl_full = $bulan_ini . '-' . str_pad($tgl, 2, '0', STR_PAD_LEFT);
+                    
+                    if ($status == '-') {
+                        $this->model->hapusAbsenMatrix($id_siswa, $tgl_full);
+                    } else {
+                        $this->model->simpanAtauUpdateAbsen($id_siswa, $tgl_full, $status);
+                    }
+                }
+            }
+            header("Location: index.php?page=absensi&pesan=sukses_simpan");
+            exit;
+        }
+    }
+}
+?>
+
+--- 4. VIEWS (views/rekap_absensi.php) ---
+Fungsi: Tabel panjang 1-30 yang selnya diubah menjadi Dropdown (<select>) tersembunyi dengan script warna otomatis.
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Rekap Absensi</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .col-tgl { width: 30px; min-width: 35px; text-align: center; }
+        .select-absen { appearance: none; -webkit-appearance: none; -moz-appearance: none; text-align-last: center; }
+    </style>
+</head>
+<body class="bg-light">
+    <!-- Navbar (Sesuai Kebutuhan) -->
+    
+    <div class="container-fluid px-4 mt-4">
+        <!-- Alert Sukses -->
+        <?php if(isset($_GET['pesan']) && $_GET['pesan'] == 'sukses_simpan'): ?>
+            <div class="alert alert-success fw-bold">Data berhasil disimpan!</div>
+        <?php endif; ?>
+
+        <form action="index.php?page=simpan_matrix" method="POST">
+            <div class="table-responsive">
+                <table class="table table-bordered table-hover">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>No</th>
+                            <th>Nama Siswa</th>
+                            <?php for($i=1; $i<=30; $i++): ?> <th><?php echo $i; ?></th> <?php endfor; ?>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php $no = 1; foreach($data_rekap as $id_siswa => $data): ?>
+                        <tr>
+                            <td><?php echo $no++; ?></td>
+                            <td><?php echo $data['nama']; ?></td>
+                            
+                            <?php for($i=1; $i<=30; $i++): 
+                                $status = $data['absen'][$i];
+                                $bg = 'bg-transparent text-dark';
+                                if($status == 'H') $bg = 'bg-success text-white';
+                                elseif($status == 'I') $bg = 'bg-primary text-white';
+                                elseif($status == 'S') $bg = 'bg-warning text-dark';
+                                elseif($status == 'A') $bg = 'bg-danger text-white';
+                            ?>
+                                <td class="col-tgl p-0">
+                                    <select name="absen[<?php echo $id_siswa; ?>][<?php echo $i; ?>]" 
+                                            class="form-select border-0 select-absen fw-bold rounded-0 <?php echo $bg; ?>" 
+                                            onchange="gantiWarna(this)">
+                                        <option value="-" <?php if($status == '-') echo 'selected'; ?>>-</option>
+                                        <option value="H" class="bg-success text-white" <?php if($status == 'H') echo 'selected'; ?>>H</option>
+                                        <option value="I" class="bg-primary text-white" <?php if($status == 'I') echo 'selected'; ?>>I</option>
+                                        <option value="S" class="bg-warning text-dark" <?php if($status == 'S') echo 'selected'; ?>>S</option>
+                                        <option value="A" class="bg-danger text-white" <?php if($status == 'A') echo 'selected'; ?>>A</option>
+                                    </select>
+                                </td>
+                            <?php endfor; ?>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <button type="submit" class="btn btn-primary mt-3">Simpan Perubahan</button>
+        </form>
+    </div>
+
+    <!-- SCRIPT GANTI WARNA INSTAN -->
+    <script>
+        function gantiWarna(elemen) {
+            elemen.className = 'form-select border-0 select-absen fw-bold rounded-0';
+            if(elemen.value === 'H') elemen.classList.add('bg-success', 'text-white');
+            else if(elemen.value === 'I') elemen.classList.add('bg-primary', 'text-white');
+            else if(elemen.value === 'S') elemen.classList.add('bg-warning', 'text-dark');
+            else if(elemen.value === 'A') elemen.classList.add('bg-danger', 'text-white');
+            else elemen.classList.add('bg-transparent', 'text-dark');
+        }
+    </script>
+</body>
+</html>
+
+--- 5. ROUTING (index.php) ---
+Fungsi: Memastikan url ?page=simpan_matrix mengarah ke fungsi yang tepat di Controller.
+
+<?php
+require_once 'config/database.php';
+require_once 'controllers/AbsensiController.php';
+
+$absensi = new AbsensiController($koneksi);
+$page = isset($_GET['page']) ? $_GET['page'] : 'dashboard';
+
+switch ($page) {
+    case 'dashboard':
+        require_once 'views/dashboard.php';
+        break;
+        
+    case 'absensi':
+        $absensi->index(); 
+        break;
+
+    case 'simpan_matrix': // <--- RUTE BARU UNTUK SAVE MASSAL
+        $absensi->simpanMatrix();
+        break;
+
+    default:
+        require_once 'views/dashboard.php';
+        break;
+}
+?>
+====================================================================

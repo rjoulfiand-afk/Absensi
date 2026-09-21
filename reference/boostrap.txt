@@ -1,0 +1,28 @@
+🎨 Cheat Sheet Warna Bootstrap (Hapalkan Ini Buat Ujian!)
+Lu cukup tambahin kata-kata ini di dalam atribut class="..." pada tag HTML apa saja (baik itu <body>, <div>, <nav>, atau <button>):
+
+1. Warna Background (Depannya bg-)
+
+bg-primary = Biru (Bagus buat tombol utama / Header)
+
+bg-success = Hijau (Bagus buat tombol Tambah Data / Notif sukses)
+
+bg-danger  = Merah (Bagus buat tombol Hapus / Logout)
+
+bg-warning = Kuning (Bagus buat tombol Edit)
+
+bg-info    = Biru Muda (Bagus buat aksen)
+
+bg-dark    = Hitam/Gelap (Bagus buat Navbar atas biar elegan)
+
+bg-light   = Abu-abu sangat terang (Bagus buat background halaman utama / body)
+
+bg-white   = Putih bersih
+
+2. Warna Teks (Depannya text-)
+
+text-white = Teks jadi putih (Wajib dipakai kalau background-nya gelap)
+
+text-dark  = Teks jadi hitam
+
+text-muted = Teks jadi abu-abu pudar (Bagus buat keterangan tambahan)

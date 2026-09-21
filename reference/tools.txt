@@ -1,0 +1,221 @@
+1. STRUKTUR FOLDER
+
+Pastikan folder kamu rapi seperti ini:
+
+howToCoding/
+│
+├── config/
+│   └── database.php       (Menghubungkan PHP ke MySQL)
+│
+├── controllers/
+│   └── AuthController.php (Otak logika: ngatur session, ngecek form)
+│
+├── models/
+│   └── UserModel.php      (Tukang Query: SELECT, INSERT ke database)
+│
+├── views/
+│   ├── login.php          (Tampilan form login)
+│   ├── register.php       (Tampilan form buat akun)
+│   └── dashboard.php      (Tampilan setelah berhasil masuk)
+│
+└── index.php              (Pintu masuk / Router penentu arah URL)
+
+
+--------------------------------------------------------------------------------------
+
+
+2. DATABASE (MySQL)
+
+Buat database bernama db_SAS di phpMyAdmin. Lalu jalankan perintah SQL ini di tab SQL untuk membuat tabel users.
+(Catatan: Versi ini menggunakan password teks biasa agar sangat mudah dipahami saat ujian).
+
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    nama_lengkap VARCHAR(100) NOT NULL,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL
+);
+
+---------------------------------------------------------------------------------------
+
+
+3. KODE & PENJELASAN ALUR
+
+A. Konfigurasi Database (config/database.php)
+
+Ini adalah jembatan antara PHP dan MySQL. Kita menggunakan mysqli.
+======================================================
+<?php
+$host = "localhost";
+$user = "root";
+$pass = "";
+$db   = "db_sas <nama database> ";
+
+$koneksi = new mysqli($host, $user, $pass, $db);
+
+// Kalau gagal nyambung, tampilkan pesan error
+if ($koneksi->connect_error) {
+    die("Koneksi gagal bro: " . $koneksi->connect_error);
+}
+?>
+=======================================================
+
+
+----------------------------------------------------------------------------
+
+======================================================
+
+B. Bagian Model (models/UserModel.php)
+
+Tugas Model HANYA SATU: Berkomunikasi dengan database (nulis perintah SQL). Tidak boleh ada Session atau pindah halaman di sini.
+
+<?php
+class UserModel {
+    private $db;
+
+    // Saat class dipanggil, koneksi database langsung dimasukkan
+    public function __construct($koneksi) {
+        $this->db = $koneksi;
+    }
+
+    // 1. Fungsi Cek Login
+    public function cekLogin($username, $password) {
+        // Amankan input dari hacker amatir
+        $username = mysqli_real_escape_string($this->db, $username);
+        $password = mysqli_real_escape_string($this->db, $password);
+
+        // Cari data yang username DAN password-nya cocok
+        $query = "SELECT * FROM users WHERE username = '$username' AND password = '$password'";
+        $hasil = $this->db->query($query);
+
+        // Kalau datanya ada (lebih dari 0 baris)
+        if ($hasil->num_rows > 0) {
+            return $hasil->fetch_assoc(); // Kembalikan datanya (id, nama, dll)
+        } else {
+            return false; // Gagal login
+        }
+    }
+
+    // 2. Fungsi Buat Akun Baru (Register)
+    public function register($nama, $username, $password) {
+        $nama = mysqli_real_escape_string($this->db, $nama);
+        $username = mysqli_real_escape_string($this->db, $username);
+        $password = mysqli_real_escape_string($this->db, $password);
+
+        $query = "INSERT INTO users (nama_lengkap, username, password) VALUES ('$nama', '$username', '$password')";
+        return $this->db->query($query);
+    }
+}
+?>
+====================================================
+
+
+C. Bagian Controller (controllers/AuthController.php)
+
+Tugas Controller adalah menerima request dari View, memprosesnya dengan Model, mengatur Session, dan menentukan ke halaman mana User harus dilempar.
+
+<?php
+require_once 'models/UserModel.php';
+
+class AuthController {
+    private $model;
+
+    public function __construct($koneksi) {
+        $this->model = new UserModel($koneksi);
+    }
+
+    // --- FUNGSI LOGIN ---
+    public function login() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $username = $_POST['username'];
+            $password = $_POST['password'];
+
+            // Tanya ke model: "Ada gak user ini?"
+            $user = $this->model->cekLogin($username, $password);
+
+            if ($user) {
+                // TIKET VIP (SESSION) DIBUAT
+                session_start();
+                $_SESSION['is_login'] = true;
+                $_SESSION['id_user'] = $user['id_user']; 
+                $_SESSION['nama_lengkap'] = $user['nama_lengkap'];
+                
+                header("Location: index.php?page=dashboard"); // Lanjut ke dashboard
+                exit;
+            } else {
+                $error = "Data tidak ditemukan atau password salah!"; // Pesan kalau gagal
+            }
+        }
+        // Tampilkan halaman login HTML
+        require_once 'views/login.php';
+    }
+
+    // --- FUNGSI REGISTER ---
+    public function register() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $nama = $_POST['nama_lengkap'];
+            $username = $_POST['username'];
+            $password = $_POST['password'];
+
+            // Suruh model masukin data ke tabel
+            if ($this->model->register($nama, $username, $password)) {
+                // Kalau sukses, lempar ke login sambil kirim pesan di URL
+                header("Location: index.php?page=login&pesan=sukses_register");
+                exit;
+            } else {
+                $error = "Gagal bikin akun! Username mungkin sudah dipakai.";
+            }
+        }
+        require_once 'views/register.php';
+    }
+
+    // --- FUNGSI LOGOUT ---
+    public function logout() {
+        session_start();
+        session_destroy(); // Bakar tiket VIP-nya
+        header("Location: index.php"); // Tendang balik ke login
+        exit;
+    }
+}
+?>
+
+
+D. Pintu Utama / Router (index.php)
+
+Semua orang yang mengakses aplikasi kita, wajib melewati file ini. File ini mengecek URL ?page=... lalu memanggil fungsi Controller yang sesuai.
+
+<?php
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+
+$auth = new AuthController($koneksi);
+
+// Cek di URL, page apa yang lagi dibuka? Kalau kosong, anggap aja buka 'login'
+$page = isset($_GET['page']) ? $_GET['page'] : 'login';
+
+// Polisi Lalu Lintas pengatur halaman
+switch ($page) {
+    case 'login':
+        $auth->login();
+        break;
+        
+    case 'register':
+        $auth->register();
+        break;
+        
+    case 'dashboard':
+        // Halaman ini wajib dicek sessionnya dulu di dalam file views/dashboard.php
+        require_once 'views/dashboard.php';
+        break;
+        
+    case 'logout':
+        $auth->logout();
+        break;
+        
+    default:
+        $auth->login();
+        break;
+}
+?>
+
+

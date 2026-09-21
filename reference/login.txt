@@ -1,0 +1,169 @@
+======================================================
+SKENARIO UJIAN: LOGIN TANPA FITUR REGISTER (AKUN FIX DARI DATABASE)
+======================================================
+
+Kadang guru minta sistem yang simpel: "Aplikasi cuma dipakai sama admin. Nggak perlu ada fitur buat akun/register. Akunnya udah ditentuin dari awal."
+
+Kalau skenarionya begini, ini yang harus lu persiapkan:
+
+1. DATABASE (Bikin Tabel & Akun Default)
+----------------------------------------
+Jalankan ini di phpMyAdmin. Kita langsung tembak 1 akun permanen.
+
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    nama_lengkap VARCHAR(100) NOT NULL
+);
+
+-- Masukin 1 akun fix untuk dipakai login pas ujian
+INSERT INTO users (username, password, nama_lengkap) 
+VALUES ('admin', '12345', 'Administrator');
+
+
+2. MODEL (Cuma Ada Fungsi Login)
+----------------------------------------
+File: models/UserModel.php
+
+<?php
+class UserModel {
+    private $db;
+
+    public function __construct($koneksi) {
+        $this->db = $koneksi;
+    }
+
+    // Fungsi cekLogin aja, fungsi register dihapus!
+    public function cekLogin($username, $password) {
+        $username = mysqli_real_escape_string($this->db, $username);
+        $password = mysqli_real_escape_string($this->db, $password);
+
+        $query = "SELECT * FROM users WHERE username = '$username' AND password = '$password'";
+        $hasil = $this->db->query($query);
+
+        if ($hasil->num_rows > 0) {
+            return $hasil->fetch_assoc();
+        } else {
+            return false;
+        }
+    }
+}
+?>
+
+
+3. CONTROLLER (Buang Logika Register)
+----------------------------------------
+File: controllers/AuthController.php
+
+<?php
+require_once 'models/UserModel.php';
+
+class AuthController {
+    private $model;
+
+    public function __construct($koneksi) {
+        $this->model = new UserModel($koneksi);
+    }
+
+    public function login() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $username = $_POST['username'];
+            $password = $_POST['password'];
+
+            $user = $this->model->cekLogin($username, $password);
+
+            if ($user) {
+                session_start();
+                $_SESSION['is_login'] = true;
+                $_SESSION['id_user'] = $user['id_user']; 
+                $_SESSION['nama_lengkap'] = $user['nama_lengkap'];
+                
+                header("Location: index.php?page=dashboard");
+                exit;
+            } else {
+                $error = "Login Gagal! Cek lagi username/password lu.";
+            }
+        }
+        // Panggil form login
+        require_once 'views/login.php';
+    }
+
+    public function logout() {
+        session_start();
+        session_destroy();
+        header("Location: index.php");
+        exit;
+    }
+}
+?>
+
+
+4. VIEW LOGIN (Buang Tombol Register)
+----------------------------------------
+File: views/login.php
+Pastikan tombol "Belum punya akun? Daftar" DIHAPUS dari form HTML lu. Biarkan cuma ada input Username, Password, dan tombol Masuk.
+
+
+5. ROUTER (Hapus Rute Register)
+----------------------------------------
+File: index.php
+
+<?php
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+
+$auth = new AuthController($koneksi);
+$page = isset($_GET['page']) ? $_GET['page'] : '';
+
+switch ($page) {
+    case 'dashboard':
+        require_once 'views/dashboard.php';
+        break;
+        
+    case 'logout':
+        $auth->logout();
+        break;
+
+    // HAPUS CASE 'register' DARI SINI!
+
+    default:
+        $auth->login();
+        break;
+}
+?>
+
+======================================================
+KESIMPULAN:
+Kalau ujiannya minta tanpa register, lu cuma butuh:
+1. File config
+2. File UserModel (cuma fungsi cekLogin)
+3. File AuthController (cuma fungsi login & logout)
+4. File login.php & dashboard.php
+5. File index.php (rute disederhanakan)
+======================================================
+
+
+
+
+
+
+
+rute halaman login
+
+// ... panggil AuthController dan database ...
+switch ($page) {
+    case 'dashboard':
+        require_once 'views/dashboard.php'; // (Dan pastikan di dalam file ini ada pengecekan session lagi)
+        break;
+    
+    // ... rute absensi ...
+
+    case 'logout':
+        $auth->logout();
+        break;
+
+    default:
+        $auth->login(); // <--- KUNCI UTAMANYA DI SINI. Kalau belum apa-apa, arahin ke login()
+        break;
+}
