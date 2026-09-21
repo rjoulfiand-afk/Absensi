@@ -26,3 +26,106 @@ text-white = Teks jadi putih (Wajib dipakai kalau background-nya gelap)
 text-dark  = Teks jadi hitam
 
 text-muted = Teks jadi abu-abu pudar (Bagus buat keterangan tambahan)
+
+
+
+
+=================================
+
+
+UI/UX (User Interface & User Experience) adalah "nyawa" visual dari aplikasi lu bro. Sebagus apapun sistem logika PHP MVC yang udah kita bangun di belakang layar, kalau tampilannya kaku, user atau guru penguji pasti kurang terkesan.
+
+Bootstrap 5 adalah jalan pintas (framework) buat bikin UI yang terlihat mahal, bersih, dan modern hanya dengan menambahkan nama-nama class di dalam tag HTML lu, tanpa perlu ngetik CSS manual ribuan baris.
+
+Biar dashboard lu punya standar UI/UX profesional (seperti aplikasi startup atau dashboard premium), ini panduan kelas-kelas Bootstrap yang wajib lu kuasai dan cara penggunaannya:
+
+1. Sistem Grid & Layout (Pondasi Kerapian)
+Dalam UI/UX, kerapian tata letak adalah nomor satu. Bootstrap membagi layar menjadi 12 kolom. Lu harus membungkus konten lu biar nggak berantakan, terutama saat dibuka di HP atau laptop.
+
+container atau container-fluid: Membungkus konten agar berada di tengah layar dan punya jarak (margin) dari kiri-kanan layar.
+
+row: Baris horizontal. Wajib ada sebelum lu bikin kolom.
+
+col-md-4, col-lg-6: Pembagian kolom. Misalnya col-md-4 artinya kotak itu akan memakan 4 dari 12 bagian layar (berarti sebaris muat 3 kotak) di layar ukuran medium (laptop).
+
+Cara Pakai di Dashboard: Gunakan grid untuk menjejerkan kartu ringkasan (misal: Total Buku, Total Siswa) agar rapi bersebelahan.
+
+2. Cards & Shadows (Efek Melayang / Widget)
+Desain dashboard modern udah sangat jarang menggunakan kotak dengan garis batas (border) hitam yang kaku. UI masa kini menggunakan kartu putih melayang di atas background abu-abu terang.
+
+card border-0: Membuat kotak kartu dan menghilangkan garis pinggirnya. Ini wajib biar UI lu bersih.
+
+shadow-sm, shadow, shadow-lg: Memberikan efek bayangan. Bikin kartu lu seolah-olah "melayang" (3D).
+
+rounded-3, rounded-4, rounded-5: Membuat sudut kotak menjadi melengkung (border-radius). Semakin besar angkanya, semakin melengkung.
+
+Cara Pakai di Dashboard:
+
+HTML
+<div class="card border-0 shadow-sm rounded-4">
+    <div class="card-body p-4">
+        Isi widget dashboard lu di sini
+    </div>
+</div>
+3. Tipografi & Hierarki Warna (Mengarahkan Mata User)
+UI/UX yang bagus akan menuntun mata pengguna untuk melihat mana teks yang paling penting (Judul) dan mana yang hanya keterangan (Sub-judul).
+
+fw-bold (Font Weight Bold): Menebalkan teks penting.
+
+text-muted: Membuat teks berwarna abu-abu pudar. Sangat krusial dalam UI/UX untuk teks deskripsi atau catatan kaki agar tidak bertabrakan dengan judul utama.
+
+text-primary (Biru), text-success (Hijau), text-danger (Merah): Warna teks fungsional.
+
+display-1 sampai display-6: Ukuran teks raksasa (lebih besar dari <h1>). Cocok buat nampilin angka ringkasan (misal: Angka "30" untuk total siswa).
+
+Cara Pakai di Dashboard:
+
+HTML
+<h5 class="fw-bold text-dark mb-0">Total Siswa</h5>
+<p class="text-muted small">Update data terakhir hari ini</p>
+<h1 class="display-4 fw-bold text-primary">30</h1>
+4. Tombol Interaktif (Call-to-Action)
+Tombol adalah penentu User Experience. Kalau tombolnya kaku dan kecil, user susah ngekliknya.
+
+btn-lg atau btn-sm: Mengatur ukuran tombol. Pakai btn-lg untuk aksi utama seperti "Simpan Data", dan btn-sm untuk tombol di dalam tabel seperti "Edit" atau "Hapus".
+
+rounded-pill: Membuat tombol berbentuk kapsul (oval penuh). Ini tren UI/UX banget di tahun 2024+.
+
+btn-outline-primary: Tombol yang tengahnya transparan dan hanya pinggirannya yang berwarna. Sangat elegan untuk tombol "Batal" atau tombol opsi sekunder.
+
+Cara Pakai di Dashboard:
+
+HTML
+<button class="btn btn-primary btn-lg rounded-pill fw-bold shadow-sm px-5">Simpan Data</button>
+<a href="#" class="btn btn-outline-secondary rounded-pill px-4">Batal</a>
+5. Formulir & Input (Form UI)
+Formulir (input type text) bawaan HTML itu jelek dan kaku. Bootstrap menyulapnya jadi enak dilihat.
+
+form-control: Kelas wajib untuk setiap kotak isian.
+
+form-control-lg: Bikin kotak isian jadi lebih besar dan luas (enak diketik di HP).
+
+input-group: Untuk menggabungkan ikon dengan kotak input.
+
+Cara Pakai di Dashboard:
+
+HTML
+<div class="input-group shadow-sm mb-3">
+    <span class="input-group-text bg-white border-end-0">@</span>
+    <input type="text" class="form-control border-start-0" placeholder="Username">
+</div>
+6. Badges (Status & Keterangan)
+Untuk tabel CRUD, user butuh melihat status secara cepat (misal: Lunas/Belum, Hadir/Alpa). Pakai Badge!
+
+badge bg-success, badge bg-danger, badge bg-warning text-dark: Membuat label status yang ukurannya pas dengan teks.
+
+rounded-pill: (Bisa digabung ke badge) biar badgenya bulat.
+
+Cara Pakai di Dashboard:
+
+HTML
+<td><span class="badge bg-success rounded-pill px-3 py-2">Hadir</span></td>
+🔥 CHEAT SHEET: Kombinasi Master UI/UX Dashboard
+Kalau lu mau liat gimana gabungan semua class di atas menghasilkan kartu dashboard yang mahal, lu copy kode HTML ini dan taruh di dalam views/dashboard.php lu (pastikan file tersebut sudah nge-load link CSS Bootstrap).
+
+HTML

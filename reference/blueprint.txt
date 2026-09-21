@@ -1,0 +1,541 @@
+====================================================================
+MASTER BLUEPRINT: SISTEM PEMINJAMAN PERPUS (ADVANCE + REAL-TIME CLOCK)
+====================================================================
+
+[STRUKTUR FOLDER & FILE]
+project_perpus/
+├── config/
+│   └── database.php
+├── controllers/
+│   ├── AuthController.php
+│   └── PinjamController.php
+├── models/
+│   ├── UserModel.php
+│   └── PinjamModel.php
+├── views/
+│   ├── login.php
+│   ├── register.php
+│   ├── dashboard.php
+│   ├── pinjam_tampil.php
+│   ├── pinjam_tambah.php
+│   └── pinjam_edit.php
+└── index.php
+
+
+====================================================================
+LANGKAH 1: PEMBUATAN DATABASE (phpMyAdmin)
+====================================================================
+Buat database bernama `db_perpus_advance`, lalu eksekusi SQL ini:
+
+-- Tabel Users (Untuk Login Petugas/Admin)
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    nama_lengkap VARCHAR(100) NOT NULL,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL
+);
+
+-- Tabel Peminjaman (Inti Aplikasi)
+CREATE TABLE peminjaman (
+    id_pinjam INT AUTO_INCREMENT PRIMARY KEY,
+    nama_peminjam VARCHAR(100) NOT NULL,
+    kelas VARCHAR(50) NOT NULL,
+    buku_dipinjam VARCHAR(150) NOT NULL,
+    waktu_pinjam DATETIME NOT NULL,
+    status ENUM('Dipinjam', 'Dikembalikan') DEFAULT 'Dipinjam'
+);
+
+
+====================================================================
+LANGKAH 2: KONEKSI & MODELS (Logika Database)
+====================================================================
+
+--- A. config/database.php ---
+<?php
+$host = "localhost";
+$user = "root";
+$pass = "";
+$db   = "db_perpus_advance";
+
+$koneksi = new mysqli($host,$user, $pass,$db);
+if ($koneksi->connect_error) die("Koneksi Hancur: " . $koneksi->connect_error);
+?>
+
+--- B. models/UserModel.php ---
+<?php
+class UserModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    public function register($nama, $username,$password) {
+        $nama = mysqli_real_escape_string($this->db, $nama);$username = mysqli_real_escape_string($this->db,$username);
+        $password = md5($password); 
+        return $this->db->query("INSERT INTO users (nama_lengkap, username, password) VALUES ('$nama', '$username', '$password')");
+    }
+
+    public function cekUsername($username) {$username = mysqli_real_escape_string($this->db,$username);
+        return $this->db->query("SELECT * FROM users WHERE username = '$username'")->num_rows > 0;
+    }
+
+    public function login($username, $password) {$username = mysqli_real_escape_string($this->db,$username);
+        $password = md5($password);
+        $hasil =$this->db->query("SELECT * FROM users WHERE username = '$username' AND password = '$password'");
+        return $hasil->fetch_assoc();
+    }
+}
+?>
+
+--- C. models/PinjamModel.php ---
+<?php
+class PinjamModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    // Tampil data, diurutkan dari yang paling baru minjam
+    public function getSemuaPinjaman() {
+        return $this->db->query("SELECT * FROM peminjaman ORDER BY waktu_pinjam DESC");
+    }
+
+    public function getPinjamanById($id) {
+        $id = (int)$id;
+        return $this->db->query("SELECT * FROM peminjaman WHERE id_pinjam = $id")->fetch_assoc();
+    }
+
+    // Waktu pinjam otomatis dilempar dari controller (Real-time server)
+    public function tambahPinjaman($nama, $kelas,$buku, $waktu) {$nama = mysqli_real_escape_string($this->db,$nama);
+        $kelas = mysqli_real_escape_string($this->db, $kelas);$buku = mysqli_real_escape_string($this->db,$buku);
+        return $this->db->query("INSERT INTO peminjaman (nama_peminjam, kelas, buku_dipinjam, waktu_pinjam) 
+                                 VALUES ('$nama', '$kelas', '$buku', '$waktu')");
+    }
+
+    public function updateStatus($id,$status) {
+        $id = (int)$id;
+        $status = mysqli_real_escape_string($this->db,$status);
+        return $this->db->query("UPDATE peminjaman SET status = '$status' WHERE id_pinjam =$id");
+    }
+
+    public function hapusPinjaman($id) {
+        $id = (int)$id;
+        return $this->db->query("DELETE FROM peminjaman WHERE id_pinjam = $id");
+    }
+}
+?>
+
+
+====================================================================
+LANGKAH 3: CONTROLLERS (Pengatur Lalu Lintas & Waktu)
+====================================================================
+
+--- A. controllers/AuthController.php ---
+<?php
+require_once 'models/UserModel.php';
+
+class AuthController {
+    private $model;
+    public function __construct($koneksi) { 
+        $this->model = new UserModel($koneksi); 
+        if (session_status() === PHP_SESSION_NONE) session_start();
+    }
+
+    public function prosesLogin() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $user =$this->model->login($_POST['username'],$_POST['password']);
+            if ($user) {
+                $_SESSION['id_user'] =$user['id_user'];
+                $_SESSION['nama_lengkap'] =$user['nama_lengkap'];
+                header("Location: index.php?page=dashboard"); exit;
+            }
+            header("Location: index.php?alert=gagal"); exit;
+        }
+        require_once 'views/login.php';
+    }
+
+    public function prosesRegister() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            if ($this->model->cekUsername($_POST['username'])) {
+                header("Location: index.php?page=register&alert=ada"); exit;
+            }
+            $this->model->register($_POST['nama_lengkap'], $_POST['username'],$_POST['password']);
+            header("Location: index.php?alert=sukses_daftar"); exit;
+        }
+        require_once 'views/register.php';
+    }
+
+    public function logout() {
+        session_destroy(); header("Location: index.php"); exit;
+    }
+}
+?>
+
+--- B. controllers/PinjamController.php ---
+<?php
+require_once 'models/PinjamModel.php';
+
+class PinjamController {
+    private $model;
+    public function __construct($koneksi) { 
+        $this->model = new PinjamModel($koneksi); 
+        // KUNCI: Kunci waktu server ke wilayah Indonesia (WIB)
+        date_default_timezone_set('Asia/Jakarta');
+    }
+
+    public function index() {
+        $data_pinjam =$this->model->getSemuaPinjaman();
+        require_once 'views/pinjam_tampil.php';
+    }
+
+    public function tambah() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            // Tangkap waktu secara presisi tepat saat tombol "Simpan" ditekan
+            $waktu_sekarang = date('Y-m-d H:i:s');$this->model->tambahPinjaman($_POST['nama'],$_POST['kelas'], $_POST['buku'],$waktu_sekarang);
+            header("Location: index.php?page=pinjam&pesan=sukses_tambah"); exit;
+        }
+        require_once 'views/pinjam_tambah.php';
+    }
+
+    public function edit() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {$this->model->updateStatus($_POST['id_pinjam'],$_POST['status']);
+            header("Location: index.php?page=pinjam&pesan=sukses_edit"); exit;
+        } else {
+            $data_edit = $this->model->getPinjamanById($_GET['id']);
+            require_once 'views/pinjam_edit.php';
+        }
+    }
+
+    public function hapus() {
+        if(isset($_GET['id'])) $this->model->hapusPinjaman($_GET['id']);
+        header("Location: index.php?page=pinjam&pesan=sukses_hapus"); exit;
+    }
+}
+?>
+
+
+====================================================================
+LANGKAH 4: VIEWS (Tampilan Modern UI/UX)
+====================================================================
+
+--- A. views/login.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Login - Perpus Advance</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light d-flex align-items-center" style="height: 100vh;">
+    <div class="container text-center">
+        <div class="card shadow-sm border-0 mx-auto rounded-4 p-4 p-md-5" style="max-width: 450px;">
+            <div class="bg-primary text-white rounded-circle d-inline-flex align-items-center justify-content-center mx-auto mb-4" style="width: 70px; height: 70px;">
+                <h3 class="m-0">📚</h3>
+            </div>
+            <h3 class="fw-bold mb-4 text-dark">Portal Petugas</h3>
+            <form action="index.php" method="POST">
+                <input type="text" name="username" class="form-control form-control-lg bg-light border-0 mb-3" placeholder="Username" required>
+                <input type="password" name="password" class="form-control form-control-lg bg-light border-0 mb-4" placeholder="Password" required>
+                <button type="submit" class="btn btn-primary btn-lg w-100 fw-bold rounded-pill shadow-sm">MASUK</button>
+            </form>
+            <div class="mt-4 small text-muted">Belum terdaftar? <a href="index.php?page=register" class="fw-bold text-primary text-decoration-none">Buat Akun Petugas</a></div>
+        </div>
+    </div>
+    
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        if(urlParams.get('alert') === 'gagal') Swal.fire('Error!', 'Username/Password salah!', 'error');
+        if(urlParams.get('alert') === 'sukses_daftar') Swal.fire('Mantap!', 'Akun berhasil dibuat. Silakan login.', 'success');
+    </script>
+</body>
+</html>
+
+--- B. views/register.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Register - Perpus Advance</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light d-flex align-items-center" style="height: 100vh;">
+    <div class="container text-center">
+        <div class="card shadow-sm border-0 mx-auto rounded-4 p-4 p-md-5" style="max-width: 450px;">
+            <h3 class="fw-bold mb-4 text-success">Registrasi Petugas</h3>
+            <form action="index.php?page=register" method="POST">
+                <input type="text" name="nama_lengkap" class="form-control form-control-lg bg-light border-0 mb-3" placeholder="Nama Lengkap" required>
+                <input type="text" name="username" class="form-control form-control-lg bg-light border-0 mb-3" placeholder="Username" required>
+                <input type="password" name="password" class="form-control form-control-lg bg-light border-0 mb-4" placeholder="Password" required>
+                <button type="submit" class="btn btn-success btn-lg w-100 fw-bold rounded-pill shadow-sm">DAFTAR SEKARANG</button>
+            </form>
+            <div class="mt-4 small text-muted">Udah punya akun? <a href="index.php" class="fw-bold text-success text-decoration-none">Login aja</a></div>
+        </div>
+    </div>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        if(urlParams.get('alert') === 'ada') Swal.fire('Oops!', 'Username sudah dipakai orang lain!', 'warning');
+    </script>
+</body>
+</html>
+
+--- C. views/dashboard.php ---
+<?php 
+if (session_status() === PHP_SESSION_NONE) session_start();
+if (!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Dashboard Perpus</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-light">
+    
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm py-3">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#"><i class="fa-solid fa-book-open-reader me-2"></i>Perpus Advance</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link active fw-bold" href="index.php?page=dashboard">Dashboard</a></li>
+                    <li class="nav-item"><a class="nav-link" href="index.php?page=pinjam">Data Peminjaman</a></li>
+                </ul>
+                <span class="text-white me-3">Halo, <strong><?php echo $_SESSION['nama_lengkap']; ?></strong>!</span>
+                <a href="index.php?page=logout" class="btn btn-danger btn-sm rounded-pill px-3 fw-bold shadow-sm">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-5">
+        <div class="card bg-white border-0 shadow-sm rounded-4 overflow-hidden mb-4">
+            <div class="bg-primary" style="height: 5px;"></div>
+            <div class="card-body p-5 text-center">
+                <h1 class="display-5 fw-bold text-dark mb-3">Sistem Peminjaman Cerdas</h1>
+                <p class="text-muted fs-5 mb-4">Pantau dan kelola sirkulasi buku sekolah dengan pencatatan waktu otomatis.</p>
+                <a href="index.php?page=pinjam" class="btn btn-primary btn-lg rounded-pill fw-bold shadow px-5">
+                    <i class="fa-solid fa-list-check me-2"></i> Kelola Peminjaman Sekarang
+                </a>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
+
+--- D. views/pinjam_tampil.php ---
+<?php 
+if (session_status() === PHP_SESSION_NONE) session_start();
+if (!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Data Peminjaman</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light">
+
+    <!-- NAVBAR (Copas dari dashboard, ubah yang active) -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm py-3 mb-4">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#"><i class="fa-solid fa-book-open-reader me-2"></i>Perpus Advance</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link" href="index.php?page=dashboard">Dashboard</a></li>
+                    <li class="nav-item"><a class="nav-link active fw-bold" href="index.php?page=pinjam">Data Peminjaman</a></li>
+                </ul>
+                <a href="index.php?page=logout" class="btn btn-danger btn-sm rounded-pill px-3 fw-bold shadow-sm">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        
+        <?php if(isset($_GET['pesan'])): ?>
+            <script>
+                let msg = '<?php echo $_GET['pesan']; ?>';
+                if(msg == 'sukses_tambah') Swal.fire('Sukses!', 'Peminjaman dicatat!', 'success');
+                if(msg == 'sukses_edit') Swal.fire('Sukses!', 'Status diperbarui!', 'success');
+                if(msg == 'sukses_hapus') Swal.fire('Terhapus!', 'Data lenyap!', 'success');
+            </script>
+        <?php endif; ?>
+
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center py-3 rounded-top-4 border-0">
+                <h4 class="m-0 fw-bold text-dark"><i class="fa-solid fa-clock-rotate-left me-2 text-primary"></i>Riwayat Peminjaman</h4>
+                <a href="index.php?page=tambah_pinjam" class="btn btn-primary fw-bold rounded-pill shadow-sm px-4">
+                    + Pinjam Buku
+                </a>
+            </div>
+            
+            <div class="card-body p-4 pt-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th>No</th>
+                                <th>Peminjam</th>
+                                <th>Kelas</th>
+                                <th>Buku Dipinjam</th>
+                                <th>Waktu Pinjam (Jam)</th>
+                                <th>Status</th>
+                                <th class="text-center">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php $no=1; while($row =$data_pinjam->fetch_assoc()): ?>
+                            <tr>
+                                <td class="text-muted fw-bold"><?php echo $no++; ?></td>
+                                <td class="fw-bold text-dark"><?php echo $row['nama_peminjam']; ?></td>
+                                <td><span class="badge bg-secondary"><?php echo $row['kelas']; ?></span></td>
+                                <td class="text-primary fw-bold"><?php echo $row['buku_dipinjam']; ?></td>
+                                <td>
+                                    <!-- FORMAT TANGGAL DAN JAM CANTIK DARI PHP -->
+                                    <small class="fw-bold text-muted">
+                                        <i class="fa-regular fa-calendar me-1"></i> <?php echo date('d M Y', strtotime($row['waktu_pinjam'])); ?><br>
+                                        <i class="fa-regular fa-clock me-1"></i> Pukul <?php echo date('H:i', strtotime($row['waktu_pinjam'])); ?> WIB
+                                    </small>
+                                </td>
+                                <td>
+                                    <?php 
+                                        $bg = ($row['status'] == 'Dipinjam') ? 'bg-warning text-dark' : 'bg-success';
+                                    ?>
+                                    <span class="badge <?php echo $bg; ?> rounded-pill px-3 py-2"><?php echo $row['status']; ?></span>
+                                </td>
+                                <td class="text-center">
+                                    <a href="index.php?page=edit_pinjam&id=<?php echo $row['id_pinjam']; ?>" class="btn btn-sm btn-outline-dark rounded-pill shadow-sm">Update</a>
+                                    <a href="index.php?page=hapus_pinjam&id=<?php echo $row['id_pinjam']; ?>" class="btn btn-sm btn-danger rounded-pill shadow-sm" onclick="return confirm('Hapus data ini?');">Hapus</a>
+                                </td>
+                            </tr>
+                            <?php endwhile; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
+--- E. views/pinjam_tambah.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Input Peminjaman</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light py-5">
+    <div class="container">
+        <div class="card shadow border-0 mx-auto rounded-4 p-4 p-md-5" style="max-width: 550px;">
+            <h4 class="fw-bold mb-1 text-primary text-center">Catat Peminjaman</h4>
+            <p class="text-muted text-center small mb-4">Waktu pinjam akan dicatat otomatis oleh sistem.</p>
+            
+            <form action="index.php?page=tambah_pinjam" method="POST">
+                <div class="mb-3">
+                    <label class="form-label fw-bold small text-muted">Nama Peminjam</label>
+                    <input type="text" name="nama" class="form-control form-control-lg bg-light border-0" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label fw-bold small text-muted">Kelas</label>
+                    <input type="text" name="kelas" class="form-control form-control-lg bg-light border-0" placeholder="Contoh: X RPL 2" required>
+                </div>
+                <div class="mb-4">
+                    <label class="form-label fw-bold small text-muted">Buku yang Dipinjam</label>
+                    <input type="text" name="buku" class="form-control form-control-lg bg-light border-0" required>
+                </div>
+                <button type="submit" class="btn btn-primary btn-lg w-100 fw-bold rounded-pill shadow-sm">SIMPAN DATA</button>
+                <div class="text-center mt-3"><a href="index.php?page=pinjam" class="text-decoration-none text-muted fw-bold">Batal</a></div>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+
+--- F. views/pinjam_edit.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Update Status</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light py-5">
+    <div class="container">
+        <div class="card shadow border-0 mx-auto rounded-4 p-4 p-md-5" style="max-width: 500px;">
+            <h4 class="fw-bold mb-4 text-warning text-center">Update Status Buku</h4>
+            
+            <form action="index.php?page=edit_pinjam" method="POST">
+                <input type="hidden" name="id_pinjam" value="<?php echo $data_edit['id_pinjam']; ?>">
+                
+                <div class="alert alert-info border-0 rounded-3 small">
+                    <strong>Peminjam:</strong> <?php echo $data_edit['nama_peminjam']; ?> (<?php echo$data_edit['kelas']; ?>)<br>
+                    <strong>Buku:</strong> <?php echo $data_edit['buku_dipinjam']; ?>
+                </div>
+
+                <div class="mb-4">
+                    <label class="form-label fw-bold small text-muted">Ubah Status</label>
+                    <select name="status" class="form-select form-select-lg bg-light border-0" required>
+                        <option value="Dipinjam" <?php if($data_edit['status'] == 'Dipinjam') echo 'selected'; ?>>Masih Dipinjam</option>
+                        <option value="Dikembalikan" <?php if($data_edit['status'] == 'Dikembalikan') echo 'selected'; ?>>Sudah Dikembalikan</option>
+                    </select>
+                </div>
+                
+                <button type="submit" class="btn btn-warning btn-lg w-100 fw-bold rounded-pill shadow-sm text-dark">UPDATE STATUS</button>
+                <div class="text-center mt-3"><a href="index.php?page=pinjam" class="text-decoration-none text-muted fw-bold">Batal</a></div>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+
+
+====================================================================
+LANGKAH 5: ROUTER UTAMA (index.php)
+====================================================================
+Taruh file ini di folder utama `project_perpus` lu.
+
+<?php
+session_start();
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+require_once 'controllers/PinjamController.php';
+
+$auth = new AuthController($koneksi);
+$pinjam = new PinjamController($koneksi);
+
+$page = isset($_GET['page']) ?$_GET['page'] : '';
+
+switch ($page) {
+    // AUTH ROUTE
+    case 'register': $auth->prosesRegister(); break;
+    case 'logout': $auth->logout(); break;
+
+    // DASHBOARD ROUTE
+    case 'dashboard':
+        if (!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        require_once 'views/dashboard.php'; 
+        break;
+
+    // CRUD ROUTE
+    case 'pinjam':
+        if (!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $pinjam->index(); 
+        break;
+    case 'tambah_pinjam':
+        if (!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $pinjam->tambah(); 
+        break;
+    case 'edit_pinjam':
+        if (!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $pinjam->edit(); 
+        break;
+    case 'hapus_pinjam':
+        if (!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $pinjam->hapus(); 
+        break;
+
+    // DEFAULT ROUTE
+    default:
+        if (isset($_SESSION['id_user'])) { header("Location: index.php?page=dashboard"); exit; }
+        $auth->prosesLogin(); 
+        break;
+}
+?>
+====================================================================
