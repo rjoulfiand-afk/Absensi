@@ -1,0 +1,399 @@
+Ini blueprint lengkap untuk membangun Aplikasi Time Tracker (Penghitung Durasi Kegiatan) menggunakan PHP Native MVC. Aplikasi ini mencakup Login, Register, Manajemen Session, SweetAlert2, dan fitur utama: Penghitungan Logika Waktu (Selisih Waktu Mulai & Selesai) menggunakan class bawaan PHP.
+
+Siapkan folder project_waktu di dalam htdocs lu, lalu buat struktur file seperti ini:
+
+Plaintext
+project_waktu/
+├── config/database.php
+├── controllers/
+│   ├── AuthController.php
+│   └── WaktuController.php
+├── models/
+│   ├── UserModel.php
+│   └── WaktuModel.php
+├── views/
+│   ├── login.php
+│   ├── register.php
+│   └── dashboard.php
+└── index.php
+1. Eksekusi Database (phpMyAdmin)
+Buat database baru bernama db_waktu, lalu jalankan query SQL ini untuk membuat tabel akun (users) dan tabel riwayat waktu:
+
+SQL
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    nama VARCHAR(100) NOT NULL,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL
+);
+
+CREATE TABLE log_waktu (
+    id_log INT AUTO_INCREMENT PRIMARY KEY,
+    id_user INT NOT NULL,
+    nama_kegiatan VARCHAR(100) NOT NULL,
+    waktu_mulai DATETIME NOT NULL,
+    waktu_selesai DATETIME NOT NULL,
+    total_durasi VARCHAR(50) NOT NULL
+);
+2. File Koneksi (config/database.php)
+PHP
+<?php
+$host = "localhost";
+$user = "root";
+$pass = "";
+$db   = "db_waktu";
+
+$koneksi = new mysqli($host, $user, $pass, $db);
+if ($koneksi->connect_error) {
+    die("Koneksi Error cuy: " . $koneksi->connect_error);
+}
+?>
+3. File Models (Logika Database)
+A. models/UserModel.php (Untuk Login & Register)
+
+PHP
+<?php
+class UserModel {
+    private $db;
+    public function __construct($koneksi) { $this->db = $koneksi; }
+
+    public function cekUsername($username) {
+        $username = mysqli_real_escape_string($this->db, $username);
+        return $this->db->query("SELECT * FROM users WHERE username = '$username'")->num_rows > 0;
+    }
+
+    public function register($nama, $username, $password) {
+        $nama = mysqli_real_escape_string($this->db, $nama);
+        $username = mysqli_real_escape_string($this->db, $username);
+        // Enkripsi password standar pakai MD5 (bisa diupgrade ke password_hash)
+        $password = md5($password); 
+        return $this->db->query("INSERT INTO users (nama, username, password) VALUES ('$nama', '$username', '$password')");
+    }
+
+    public function login($username, $password) {
+        $username = mysqli_real_escape_string($this->db, $username);
+        $password = md5($password);
+        $hasil = $this->db->query("SELECT * FROM users WHERE username = '$username' AND password = '$password'");
+        return $hasil->fetch_assoc();
+    }
+}
+?>
+B. models/WaktuModel.php (Untuk Nyimpan Data Perhitungan)
+
+PHP
+<?php
+class WaktuModel {
+    private $db;
+    public function __construct($koneksi) { $this->db = $koneksi; }
+
+    public function simpanLog($id_user, $kegiatan, $mulai, $selesai, $durasi) {
+        $kegiatan = mysqli_real_escape_string($this->db, $kegiatan);
+        return $this->db->query("INSERT INTO log_waktu (id_user, nama_kegiatan, waktu_mulai, waktu_selesai, total_durasi) 
+                                 VALUES ($id_user, '$kegiatan', '$mulai', '$selesai', '$durasi')");
+    }
+
+    public function getLogByUser($id_user) {
+        return $this->db->query("SELECT * FROM log_waktu WHERE id_user = $id_user ORDER BY id_log DESC");
+    }
+}
+?>
+4. File Controllers (Pengatur Alur & Logika)
+A. controllers/AuthController.php
+
+PHP
+<?php
+require_once 'models/UserModel.php';
+
+class AuthController {
+    private $model;
+    public function __construct($koneksi) { $this->model = new UserModel($koneksi); }
+
+    public function prosesLogin() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $user = $this->model->login($_POST['username'], $_POST['password']);
+            if ($user) {
+                $_SESSION['id_user'] = $user['id_user'];
+                $_SESSION['nama'] = $user['nama'];
+                header("Location: index.php?page=dashboard&alert=login_sukses");
+                exit;
+            }
+            header("Location: index.php?alert=login_gagal"); exit;
+        }
+        require_once 'views/login.php';
+    }
+
+    public function prosesRegister() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            if ($this->model->cekUsername($_POST['username'])) {
+                header("Location: index.php?page=register&alert=username_ada"); exit;
+            }
+            $this->model->register($_POST['nama'], $_POST['username'], $_POST['password']);
+            header("Location: index.php?alert=register_sukses"); exit;
+        }
+        require_once 'views/register.php';
+    }
+
+    public function logout() {
+        session_destroy();
+        header("Location: index.php?alert=logout"); exit;
+    }
+}
+?>
+B. controllers/WaktuController.php (Inti Logika Penghitungan Waktu)
+
+PHP
+<?php
+require_once 'models/WaktuModel.php';
+
+class WaktuController {
+    private $model;
+    public function __construct($koneksi) { $this->model = new WaktuModel($koneksi); }
+
+    public function index() {
+        $id_user = $_SESSION['id_user'];
+        $data_log = $this->model->getLogByUser($id_user);
+        require_once 'views/dashboard.php';
+    }
+
+    // LOGIKA PENGHITUNGAN WAKTU ADA DI SINI
+    public function hitungDurasi() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $kegiatan = $_POST['nama_kegiatan'];
+            $waktu_mulai = $_POST['waktu_mulai']; // Format dari form datetime-local
+            $waktu_selesai = $_POST['waktu_selesai'];
+
+            // 1. Ubah string waktu menjadi Objek DateTime PHP
+            $obj_mulai = new DateTime($waktu_mulai);
+            $obj_selesai = new DateTime($waktu_selesai);
+
+            // 2. Validasi: Waktu selesai tidak boleh lebih dulu dari waktu mulai
+            if ($obj_selesai < $obj_mulai) {
+                header("Location: index.php?page=dashboard&alert=waktu_error");
+                exit;
+            }
+
+            // 3. Hitung selisih (difference) antara dua waktu
+            $selisih = $obj_mulai->diff($obj_selesai);
+
+            // 4. Format hasil logika menjadi teks yang mudah dibaca (Misal: 2 Jam 30 Menit)
+            // $selisih->d (hari), $selisih->h (jam), $selisih->i (menit)
+            $durasi_teks = "";
+            if ($selisih->d > 0) $durasi_teks .= $selisih->d . " Hari ";
+            if ($selisih->h > 0) $durasi_teks .= $selisih->h . " Jam ";
+            $durasi_teks .= $selisih->i . " Menit";
+
+            // 5. Simpan ke Database
+            $this->model->simpanLog($_SESSION['id_user'], $kegiatan, $waktu_mulai, $waktu_selesai, $durasi_teks);
+
+            header("Location: index.php?page=dashboard&alert=hitung_sukses");
+            exit;
+        }
+    }
+}
+?>
+5. File Views (Tampilan & Alert)
+A. views/login.php
+
+HTML
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Login - Time Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light d-flex align-items-center" style="height: 100vh;">
+    <div class="container text-center">
+        <div class="card shadow border-0 mx-auto p-4" style="max-width: 400px; border-radius: 15px;">
+            <h3 class="fw-bold mb-4 text-primary">Login Dulu Cuy</h3>
+            <form action="index.php" method="POST">
+                <input type="text" name="username" class="form-control mb-3" placeholder="Username" required>
+                <input type="password" name="password" class="form-control mb-4" placeholder="Password" required>
+                <button type="submit" class="btn btn-primary w-100 fw-bold">Masuk</button>
+            </form>
+            <div class="mt-3 small">Belum punya akun? <a href="index.php?page=register">Daftar di sini</a></div>
+        </div>
+    </div>
+
+    <!-- Logika Penangkapan Alert -->
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const alertType = urlParams.get('alert');
+        
+        if (alertType === 'login_gagal') {
+            Swal.fire({ icon: 'error', title: 'Oops...', text: 'Username atau Password salah!' });
+        } else if (alertType === 'register_sukses') {
+            Swal.fire({ icon: 'success', title: 'Mantap!', text: 'Akun berhasil dibuat. Silakan login.' });
+        } else if (alertType === 'logout') {
+            Swal.fire({ icon: 'info', title: 'Logout', text: 'Lu udah berhasil keluar.', timer: 2000 });
+        }
+    </script>
+</body>
+</html>
+B. views/register.php
+
+HTML
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Register - Time Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light d-flex align-items-center" style="height: 100vh;">
+    <div class="container text-center">
+        <div class="card shadow border-0 mx-auto p-4" style="max-width: 400px; border-radius: 15px;">
+            <h3 class="fw-bold mb-4 text-success">Bikin Akun Baru</h3>
+            <form action="index.php?page=register" method="POST">
+                <input type="text" name="nama" class="form-control mb-3" placeholder="Nama Lengkap" required>
+                <input type="text" name="username" class="form-control mb-3" placeholder="Username" required>
+                <input type="password" name="password" class="form-control mb-4" placeholder="Password" required>
+                <button type="submit" class="btn btn-success w-100 fw-bold">Daftar</button>
+            </form>
+            <div class="mt-3 small">Udah punya akun? <a href="index.php">Login aja</a></div>
+        </div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('alert') === 'username_ada') {
+            Swal.fire({ icon: 'warning', title: 'Yahhh', text: 'Username itu udah ada yang pakai cuy, cari yang lain!' });
+        }
+    </script>
+</body>
+</html>
+C. views/dashboard.php (Form Logika Waktu)
+
+HTML
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Dashboard Time Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light">
+    
+    <nav class="navbar navbar-dark bg-dark shadow-sm">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#">⏱️ Time Tracker</a>
+            <div class="d-flex align-items-center">
+                <span class="text-white me-3">Hi, <?php echo $_SESSION['nama']; ?>!</span>
+                <a href="index.php?page=logout" class="btn btn-outline-danger btn-sm">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-5">
+        <div class="row">
+            <!-- FORM PENGHITUNG WAKTU -->
+            <div class="col-md-4 mb-4">
+                <div class="card border-0 shadow rounded-4 p-4">
+                    <h5 class="fw-bold mb-3 text-primary">Hitung Durasi Kegiatan</h5>
+                    <form action="index.php?page=hitung_waktu" method="POST">
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold">Nama Kegiatan</label>
+                            <input type="text" name="nama_kegiatan" class="form-control" placeholder="Contoh: Ngerjain Skripsi" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold">Waktu Mulai</label>
+                            <!-- Tipe input datetime-local krusial buat input waktu -->
+                            <input type="datetime-local" name="waktu_mulai" class="form-control" required>
+                        </div>
+                        <div class="mb-4">
+                            <label class="form-label small fw-bold">Waktu Selesai</label>
+                            <input type="datetime-local" name="waktu_selesai" class="form-control" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100 fw-bold">Eksekusi Logika Waktu</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- TABEL HASIL PENGHITUNGAN -->
+            <div class="col-md-8">
+                <div class="card border-0 shadow rounded-4 p-4">
+                    <h5 class="fw-bold mb-3">Riwayat Durasi Lu</h5>
+                    <table class="table table-striped align-middle">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>No</th>
+                                <th>Kegiatan</th>
+                                <th>Mulai</th>
+                                <th>Selesai</th>
+                                <th>Total Durasi (Hasil)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php $no=1; while($row = $data_log->fetch_assoc()): ?>
+                            <tr>
+                                <td><?php echo $no++; ?></td>
+                                <td class="fw-bold text-primary"><?php echo $row['nama_kegiatan']; ?></td>
+                                <td><small><?php echo date('d M Y, H:i', strtotime($row['waktu_mulai'])); ?></small></td>
+                                <td><small><?php echo date('d M Y, H:i', strtotime($row['waktu_selesai'])); ?></small></td>
+                                <td><span class="badge bg-success fs-6"><?php echo $row['total_durasi']; ?></span></td>
+                            </tr>
+                            <?php endwhile; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const alertType = urlParams.get('alert');
+        
+        if (alertType === 'login_sukses') {
+            Swal.fire({ icon: 'success', title: 'Welcome!', text: 'Halo <?php echo $_SESSION['nama']; ?>, selamat datang.', timer: 2000, showConfirmButton: false });
+        } else if (alertType === 'waktu_error') {
+            Swal.fire({ icon: 'error', title: 'Logika Gagal', text: 'Waktu selesai nggak boleh lebih mundur dari waktu mulai bro!' });
+        } else if (alertType === 'hitung_sukses') {
+            Swal.fire({ icon: 'success', title: 'Berhasil!', text: 'Durasi kegiatan berhasil dihitung dan direkam server.', timer: 2500 });
+        }
+    </script>
+</body>
+</html>
+6. Router Pengendali (index.php)
+Taruh file ini di folder paling luar (project_waktu/index.php).
+
+PHP
+<?php
+// Wajib ditaruh paling atas biar session nggak bentrok
+session_start();
+
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+require_once 'controllers/WaktuController.php';
+
+$auth = new AuthController($koneksi);
+$waktu = new WaktuController($koneksi);
+
+$page = isset($_GET['page']) ? $_GET['page'] : '';
+
+switch ($page) {
+    // RUTE AUTENTIKASI
+    case 'register':
+        $auth->prosesRegister();
+        break;
+    case 'logout':
+        $auth->logout();
+        break;
+
+    // RUTE DASHBOARD & WAKTU (Harus Login Dulu)
+    case 'dashboard':
+        if (!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $waktu->index();
+        break;
+    case 'hitung_waktu':
+        if (!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $waktu->hitungDurasi();
+        break;
+
+    // DEFAULT (Halaman Login)
+    default:
+        if (isset($_SESSION['id_user'])) { header("Location: index.php?page=dashboard"); exit; }
+        $auth->prosesLogin();
+        break;
+}
+?>

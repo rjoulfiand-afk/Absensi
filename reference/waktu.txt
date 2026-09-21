@@ -1,0 +1,165 @@
+====================================================================
+MATERI MASTER: MVC REAL-TIME SERVER CLOCK & TIMESTAMP
+====================================================================
+Kasus: Membuat Dashboard Absensi di mana jam berdetak secara real-time mengikuti Waktu Server (WIB/Asia/Jakarta), bukan waktu dari HP/Laptop user (yang rawan dimanipulasi).
+
+--- 1. DATABASE (phpMyAdmin) ---
+Buka database lu (misal: db_sekolah), lalu buat tabel untuk merekam waktu klik:
+
+CREATE TABLE log_waktu (
+    id_log INT AUTO_INCREMENT PRIMARY KEY,
+    aksi VARCHAR(100) NOT NULL,
+    waktu_eksekusi DATETIME NOT NULL
+);
+
+--- 2. MODEL (models/WaktuModel.php) ---
+Fungsi: Berinteraksi dengan database untuk merekam waktu secara presisi.
+
+<?php
+class WaktuModel {
+    private $db;
+    public function __construct($koneksi) { $this->db = $koneksi; }
+
+    public function rekamJejak($aksi, $waktu_server) {
+        $aksi = mysqli_real_escape_string($this->db, $aksi);
+        // Simpan aksi dan waktu saat itu ke database
+        return $this->db->query("INSERT INTO log_waktu (aksi, waktu_eksekusi) VALUES ('$aksi', '$waktu_server')");
+    }
+}
+?>
+
+--- 3. CONTROLLER (controllers/WaktuController.php) ---
+Fungsi: Mengunci Zona Waktu (Timezone) server dan mengirimkan data waktu awal ke View.
+
+<?php
+require_once 'models/WaktuModel.php';
+
+class WaktuController {
+    private $model;
+    
+    public function __construct($koneksi) { 
+        $this->model = new WaktuModel($koneksi); 
+        // KUNCI UTAMA: Set timezone ke WIB (Surabaya/Jakarta)
+        date_default_timezone_set('Asia/Jakarta');
+    }
+
+    public function index() {
+        // Ambil waktu server saat halaman pertama kali dimuat
+        // Format ISO 8601 (YYYY-MM-DDTHH:ii:ss) sangat cocok dibaca oleh JavaScript
+        $waktu_server_sekarang = date('Y-m-d\TH:i:s'); 
+        
+        require_once 'views/dashboard_waktu.php';
+    }
+
+    public function simpanWaktu() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            // Ambil waktu server tepat saat tombol ditekan
+            $waktu_eksekusi = date('Y-m-d H:i:s'); 
+            $aksi = "User melakukan absensi/klik";
+            
+            $this->model->rekamJejak($aksi, $waktu_eksekusi);
+            header("Location: index.php?pesan=sukses_waktu");
+            exit;
+        }
+    }
+}
+?>
+
+--- 4. VIEW DENGAN JAVASCRIPT REAL-TIME (views/dashboard_waktu.php) ---
+Fungsi: Menggunakan Bootstrap 5 untuk UI, dan Vanilla JavaScript untuk membuat waktu server berdetak setiap 1000 milidetik (1 detik).
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Real-Time Clock Dashboard</title>
+    <!-- Penggunaan Bootstrap 5 via CDN -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Digital / Monospace agar angka tidak goyang saat berdetak -->
+    <style>
+        .jam-digital { font-family: 'Courier New', Courier, monospace; letter-spacing: 2px; }
+    </style>
+</head>
+<body class="bg-dark text-white d-flex align-items-center" style="height: 100vh;">
+
+    <div class="container text-center">
+        <?php if(isset($_GET['pesan']) && $_GET['pesan'] == 'sukses_waktu'): ?>
+            <div class="alert alert-success fw-bold d-inline-block shadow">
+                Berhasil! Waktu eksekusi telah direkam di Server.
+            </div>
+        <?php endif; ?>
+
+        <!-- Penggunaan Bootstrap: Card transparan, Shadow, Padding besar -->
+        <div class="card bg-secondary bg-opacity-25 border-0 shadow-lg mx-auto rounded-4 p-5" style="max-width: 600px;">
+            <h4 class="text-uppercase text-info fw-bold mb-4">Waktu Server (WIB)</h4>
+            
+            <!-- Penggunaan Bootstrap: display-1 membuat teks raksasa -->
+            <h1 id="tampil-jam" class="display-1 fw-bold text-white jam-digital mb-0">Loading...</h1>
+            <p id="tampil-tanggal" class="fs-4 text-light mt-2"></p>
+            
+            <hr class="border-secondary my-4">
+            
+            <form action="index.php?page=simpan_waktu" method="POST">
+                <!-- Penggunaan Bootstrap: btn-lg untuk tombol aksi utama -->
+                <button type="submit" class="btn btn-primary btn-lg fw-bold rounded-pill shadow px-5">
+                    REKAM WAKTU SEKARANG
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- LOGIKA JAVASCRIPT REAL-TIME (SERVER SYNC) -->
+    <script>
+        // 1. Ambil waktu statis dari PHP (Controller) dan jadikan objek Date JavaScript
+        // Ini memastikan jam dimulai dari waktu server, BUKAN waktu HP pengguna
+        let waktuServer = new Date("<?php echo $waktu_server_sekarang; ?>");
+
+        function updateJam() {
+            // 2. Tambahkan 1000 milidetik (1 detik) ke waktu server setiap kali fungsi ini dipanggil
+            waktuServer.setSeconds(waktuServer.getSeconds() + 1);
+
+            // 3. Ekstrak Jam, Menit, Detik
+            // padStart(2, '0') memastikan format selalu 2 digit (misal: 09:05:02, bukan 9:5:2)
+            let jam = String(waktuServer.getHours()).padStart(2, '0');
+            let menit = String(waktuServer.getMinutes()).padStart(2, '0');
+            let detik = String(waktuServer.getSeconds()).padStart(2, '0');
+
+            // 4. Ekstrak Tanggal, Bulan, Tahun
+            let hari = String(waktuServer.getDate()).padStart(2, '0');
+            let bulan = String(waktuServer.getMonth() + 1).padStart(2, '0'); // Bulan dimulai dari 0, makanya +1
+            let tahun = waktuServer.getFullYear();
+
+            // 5. Tampilkan ke dalam elemen HTML
+            document.getElementById('tampil-jam').innerText = jam + ":" + menit + ":" + detik;
+            document.getElementById('tampil-tanggal').innerText = hari + "/" + bulan + "/" + tahun;
+        }
+
+        // 6. Jalankan fungsi updateJam() setiap 1000 ms (1 detik) tanpa henti
+        setInterval(updateJam, 1000);
+        
+        // Panggil sekali di awal agar tidak ada delay "Loading..."
+        updateJam();
+    </script>
+</body>
+</html>
+
+--- 5. ROUTER (index.php) ---
+Fungsi: Mengarahkan URL ke fungsi penanganan waktu di Controller.
+
+<?php
+require_once 'config/database.php'; // Pastikan file koneksi lo aman
+require_once 'controllers/WaktuController.php';
+
+$waktu = new WaktuController($koneksi);
+$page = isset($_GET['page']) ? $_GET['page'] : '';
+
+switch ($page) {
+    case 'simpan_waktu':
+        $waktu->simpanWaktu();
+        break;
+
+    default:
+        $waktu->index();
+        break;
+}
+?>
+====================================================================
