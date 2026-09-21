@@ -1,0 +1,415 @@
+====================================================================
+MASTER BLUEPRINT: SISTEM INVENTARIS VENDOR + LOGIN (MVC NATIVE)
+====================================================================
+Struktur Folder yang harus disiapkan:
+project_vendor/
+├── config/
+│   └── database.php
+├── controllers/
+│   ├── AuthController.php
+│   └── VendorController.php
+├── models/
+│   ├── UserModel.php
+│   └── VendorModel.php
+├── views/
+│   ├── login.php
+│   ├── dashboard.php
+│   ├── vendor_tampil.php
+│   └── vendor_tambah.php
+└── index.php
+
+====================================================================
+BAGIAN 1: PONDASI DATABASE (phpMyAdmin)
+====================================================================
+Buat database baru bernama: `db_vendor`
+Lalu jalankan SQL ini untuk membuat tabel users dan tabel data_vendor:
+
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    nama_lengkap VARCHAR(100) NOT NULL
+);
+
+-- Bikin akun admin default (Password: 12345)
+INSERT INTO users (username, password, nama_lengkap) 
+VALUES ('admin', '12345', 'Administrator');
+
+CREATE TABLE data_vendor (
+    id_vendor INT AUTO_INCREMENT PRIMARY KEY,
+    nama_barang VARCHAR(100) NOT NULL,
+    nama_vendor VARCHAR(100) NOT NULL,
+    alamat TEXT NOT NULL,
+    tanggal_masuk TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+====================================================================
+BAGIAN 2: KONEKSI DATABASE (config/database.php)
+====================================================================
+<?php
+$host = "localhost";
+$user = "root";
+$pass = "";
+$db   = "db_vendor";
+
+$koneksi = new mysqli($host,$user, $pass,$db);
+
+if ($koneksi->connect_error) {
+    die("Database hancur lebur: " . $koneksi->connect_error);
+}
+?>
+
+====================================================================
+BAGIAN 3: MODELS (Logika Database)
+====================================================================
+
+--- A. models/UserModel.php (Khusus ngurus Login) ---
+<?php
+class UserModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    public function cekLogin($username, $password) {$username = mysqli_real_escape_string($this->db,$username);
+        $password = mysqli_real_escape_string($this->db, $password);$query = "SELECT * FROM users WHERE username = '$username' AND password = '$password'";
+        $hasil = $this->db->query($query);
+        
+        if($hasil->num_rows > 0) {
+            return $hasil->fetch_assoc(); // Bawa balik data usernya
+        }
+        return false;
+    }
+}
+?>
+
+--- B. models/VendorModel.php (Khusus ngurus Data Vendor) ---
+<?php
+class VendorModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    public function getSemuaVendor() {
+        return $this->db->query("SELECT * FROM data_vendor ORDER BY id_vendor DESC");
+    }
+
+    public function tambahVendor($barang,$vendor, $alamat) {$barang = mysqli_real_escape_string($this->db,$barang);
+        $vendor = mysqli_real_escape_string($this->db, $vendor);$alamat = mysqli_real_escape_string($this->db,$alamat);
+        
+        return $this->db->query("INSERT INTO data_vendor (nama_barang, nama_vendor, alamat) VALUES ('$barang', '$vendor', '$alamat')");
+    }
+
+    public function hapusVendor($id) {
+        $id = (int)$id;
+        return $this->db->query("DELETE FROM data_vendor WHERE id_vendor = $id");
+    }
+}
+?>
+
+====================================================================
+BAGIAN 4: CONTROLLERS (Pengatur Lalu Lintas)
+====================================================================
+
+--- A. controllers/AuthController.php ---
+<?php
+require_once 'models/UserModel.php';
+
+class AuthController {
+    private $model;
+    public function __construct($koneksi) { 
+        $this->model = new UserModel($koneksi); 
+        if (session_status() === PHP_SESSION_NONE) { session_start(); }
+    }
+
+    public function login() {
+        // Jika sudah login, tendang ke dashboard
+        if(isset($_SESSION['is_login'])) { header("Location: index.php?page=dashboard"); exit; }
+
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $user =$_POST['username'];
+            $pass =$_POST['password'];
+            $cek =$this->model->cekLogin($user,$pass);
+
+            if ($cek) {$_SESSION['is_login'] = true;
+                $_SESSION['nama_lengkap'] =$cek['nama_lengkap'];
+                header("Location: index.php?page=dashboard");
+                exit;
+            } else {
+                header("Location: index.php?error=1");
+                exit;
+            }
+        }
+        require_once 'views/login.php';
+    }
+
+    public function logout() {
+        session_destroy();
+        header("Location: index.php");
+        exit;
+    }
+}
+?>
+
+--- B. controllers/VendorController.php ---
+<?php
+require_once 'models/VendorModel.php';
+
+class VendorController {
+    private $model;
+    public function __construct($koneksi) { $this->model = new VendorModel($koneksi); }
+
+    public function index() {
+        $data_vendor =$this->model->getSemuaVendor();
+        require_once 'views/vendor_tampil.php';
+    }
+
+    public function tambah() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $barang =$_POST['nama_barang'];
+            $vendor =$_POST['nama_vendor'];
+            $alamat =$_POST['alamat'];
+
+            if ($this->model->tambahVendor($barang, $vendor,$alamat)) {
+                header("Location: index.php?page=vendor&pesan=sukses_tambah");
+                exit;
+            }
+        }
+        require_once 'views/vendor_tambah.php';
+    }
+
+    public function hapus() {
+        if (isset($_GET['id'])) {
+            $this->model->hapusVendor($_GET['id']);
+        }
+        header("Location: index.php?page=vendor&pesan=sukses_hapus");
+        exit;
+    }
+}
+?>
+
+====================================================================
+BAGIAN 5: VIEWS (Tampilan Modern & Ekstra Keren)
+====================================================================
+
+--- A. views/login.php (Gaya Glassmorphism / Kaca Transparan) ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Login System</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Poppins', sans-serif; background: linear-gradient(45deg, #1a2a6c, #b21f1f, #fdbb2d); height: 100vh; }
+        .glass-card { background: rgba(255, 255, 255, 0.1); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.2); border-radius: 20px; color: white; }
+        .form-control { background: rgba(255,255,255,0.2); border: none; color: white; }
+        .form-control:focus { background: rgba(255,255,255,0.3); color: white; box-shadow: none; }
+        .form-control::placeholder { color: rgba(255,255,255,0.7); }
+    </style>
+</head>
+<body class="d-flex align-items-center justify-content-center">
+    <div class="col-md-4">
+        <div class="card glass-card p-5 shadow-lg">
+            <h2 class="fw-bold text-center mb-4">Welcome Back</h2>
+            <?php if(isset($_GET['error'])): ?>
+                <div class="alert alert-danger bg-danger text-white border-0 py-2">Login gagal! Cek user/pass.</div>
+            <?php endif; ?>
+            <form action="index.php" method="POST">
+                <div class="mb-3">
+                    <label>Username</label>
+                    <input type="text" name="username" class="form-control rounded-pill px-4" placeholder="admin" required>
+                </div>
+                <div class="mb-4">
+                    <label>Password</label>
+                    <input type="password" name="password" class="form-control rounded-pill px-4" placeholder="*****" required>
+                </div>
+                <button type="submit" class="btn btn-light w-100 rounded-pill fw-bold text-dark">L O G I N</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+
+--- B. views/dashboard.php (Dashboard Simple Elegan) ---
+<?php 
+if (session_status() === PHP_SESSION_NONE) session_start();
+if (!isset($_SESSION['is_login'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+    <style> body { font-family: 'Poppins', sans-serif; background-color: #f4f7f6; } </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark py-3 shadow">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#">VENDOR APP</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link active" href="index.php?page=dashboard">Home</a></li>
+                    <li class="nav-item"><a class="nav-link" href="index.php?page=vendor">Data Vendor</a></li>
+                </ul>
+                <a href="index.php?page=logout" class="btn btn-danger btn-sm rounded-pill px-4">Logout</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-5 text-center">
+        <h1 class="fw-bold">Halo, <?php echo $_SESSION['nama_lengkap']; ?>!</h1>
+        <p class="text-muted">Gunakan menu di atas untuk mengelola data barang dan supplier.</p>
+        <img src="https://cdn-icons-png.flaticon.com/512/2830/2830312.png" width="200" class="mt-4 opacity-50">
+    </div>
+</body>
+</html>
+
+--- C. views/vendor_tampil.php (Tabel Keren) ---
+<?php 
+if (session_status() === PHP_SESSION_NONE) session_start();
+if (!isset($_SESSION['is_login'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Data Vendor</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+    <style> body { font-family: 'Poppins', sans-serif; background-color: #f4f7f6; } .card { border-radius: 15px; } </style>
+</head>
+<body>
+    <!-- Navbar persis seperti di dashboard -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark py-3 shadow">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#">VENDOR APP</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link" href="index.php?page=dashboard">Home</a></li>
+                    <li class="nav-item"><a class="nav-link active" href="index.php?page=vendor">Data Vendor</a></li>
+                </ul>
+                <a href="index.php?page=logout" class="btn btn-danger btn-sm rounded-pill px-4">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-5">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h3 class="fw-bold m-0">Daftar Barang & Vendor</h3>
+            <a href="index.php?page=tambah_vendor" class="btn btn-dark rounded-pill px-4 shadow">+ Tambah Data</a>
+        </div>
+
+        <div class="card border-0 shadow-sm p-3">
+            <table class="table table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>No</th>
+                        <th>Nama Barang</th>
+                        <th>Nama Vendor</th>
+                        <th>Alamat</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php $no=1; while($row =$data_vendor->fetch_assoc()): ?>
+                    <tr>
+                        <td><span class="badge bg-secondary rounded-circle"><?php echo $no++; ?></span></td>
+                        <td class="fw-bold text-primary"><?php echo $row['nama_barang']; ?></td>
+                        <td><?php echo $row['nama_vendor']; ?></td>
+                        <td><small class="text-muted"><?php echo $row['alamat']; ?></small></td>
+                        <td>
+                            <a href="index.php?page=hapus_vendor&id=<?php echo $row['id_vendor']; ?>" 
+                               class="btn btn-sm btn-outline-danger rounded-pill px-3"
+                               onclick="return confirm('Hapus vendor ini?');">Hapus</a>
+                        </td>
+                    </tr>
+                    <?php endwhile; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+
+--- D. views/vendor_tambah.php (Form Bersih Modern) ---
+<?php 
+if (session_status() === PHP_SESSION_NONE) session_start();
+if (!isset($_SESSION['is_login'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Tambah Data</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+    <style> body { font-family: 'Poppins', sans-serif; background-color: #f4f7f6; } </style>
+</head>
+<body class="d-flex align-items-center" style="height: 100vh;">
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-5">
+                <div class="card border-0 shadow-lg rounded-4 p-4">
+                    <h4 class="fw-bold mb-4 text-center">Input Data Vendor</h4>
+                    <form action="index.php?page=tambah_vendor" method="POST">
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold text-muted">Nama Barang</label>
+                            <input type="text" name="nama_barang" class="form-control form-control-lg bg-light border-0" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold text-muted">Nama Vendor / Supplier</label>
+                            <input type="text" name="nama_vendor" class="form-control form-control-lg bg-light border-0" required>
+                        </div>
+                        <div class="mb-4">
+                            <label class="form-label fw-semibold text-muted">Alamat Lengkap</label>
+                            <textarea name="alamat" class="form-control bg-light border-0" rows="3" required></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-dark w-100 btn-lg rounded-pill shadow">Simpan Data</button>
+                        <a href="index.php?page=vendor" class="btn btn-link w-100 mt-2 text-decoration-none text-muted">Batal</a>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
+====================================================================
+BAGIAN 6: ROUTER UTAMA (index.php)
+====================================================================
+Letakkan file ini di paling luar folder project lu.
+Ini adalah pusat kendali yang menyambungkan semua file di atas.
+
+<?php
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+require_once 'controllers/VendorController.php';
+
+$auth = new AuthController($koneksi);
+$vendor = new VendorController($koneksi);
+
+$page = isset($_GET['page']) ?$_GET['page'] : '';
+
+switch ($page) {
+    case 'dashboard':
+        require_once 'views/dashboard.php';
+        break;
+        
+    case 'vendor':
+        $vendor->index();
+        break;
+        
+    case 'tambah_vendor':
+        $vendor->tambah();
+        break;
+        
+    case 'hapus_vendor':
+        $vendor->hapus();
+        break;
+        
+    case 'logout':
+        $auth->logout();
+        break;
+
+    default:
+        // Kalau URL kosong atau nggak valid, arahkan ke login
+        $auth->login();
+        break;
+}
+?>
+====================================================================

@@ -1,0 +1,491 @@
+====================================================================
+MASTER BLUEPRINT: SISTEM PERPUSTAKAAN (LOGIN, REGISTER, ALERT, CRUD)
+====================================================================
+Siapkan folder project (misal: `app_perpus`) dan buat struktur ini:
+app_perpus/
+├── config/database.php
+├── controllers/
+│   ├── AuthController.php
+│   └── BukuController.php
+├── models/
+│   ├── UserModel.php
+│   └── BukuModel.php
+├── views/
+│   ├── login.php
+│   ├── register.php
+│   ├── dashboard.php
+│   ├── buku_tampil.php
+│   ├── buku_tambah.php
+│   └── buku_edit.php
+└── index.php
+
+====================================================================
+1. DATABASE (Buat di phpMyAdmin)
+====================================================================
+Buat database bernama: `db_sekolah`
+
+-- Tabel untuk Login & Register
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    nama_lengkap VARCHAR(100) NOT NULL
+);
+
+-- Tabel untuk CRUD Buku
+CREATE TABLE buku (
+    id_buku INT AUTO_INCREMENT PRIMARY KEY,
+    judul VARCHAR(150) NOT NULL,
+    penulis VARCHAR(100) NOT NULL,
+    kategori VARCHAR(50) NOT NULL,
+    tahun_terbit INT(4) NOT NULL
+);
+
+====================================================================
+2. KONEKSI (config/database.php)
+====================================================================
+<?php
+$host = "localhost";
+$user = "root";
+$pass = "";
+$db   = "db_sekolah";
+
+$koneksi = new mysqli($host,$user, $pass,$db);
+if ($koneksi->connect_error) { die("Koneksi Error: " . $koneksi->connect_error); }
+?>
+
+====================================================================
+3. MODELS (Otak Database)
+====================================================================
+
+--- A. models/UserModel.php (Tambah Fitur Cek User & Register) ---
+<?php
+class UserModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    public function cekLogin($username,$password) {
+        $username = mysqli_real_escape_string($this->db, $username);$password = mysqli_real_escape_string($this->db,$password);
+        $hasil =$this->db->query("SELECT * FROM users WHERE username = '$username' AND password = '$password'");
+        return ($hasil->num_rows > 0) ?$hasil->fetch_assoc() : false;
+    }
+
+    public function cekUsernameAda($username) {$username = mysqli_real_escape_string($this->db,$username);
+        $hasil =$this->db->query("SELECT * FROM users WHERE username = '$username'");
+        return $hasil->num_rows > 0;
+    }
+
+    public function register($username,$password, $nama) {$username = mysqli_real_escape_string($this->db,$username);
+        $password = mysqli_real_escape_string($this->db, $password);$nama = mysqli_real_escape_string($this->db,$nama);
+        return $this->db->query("INSERT INTO users (username, password, nama_lengkap) VALUES ('$username', '$password', '$nama')");
+    }
+}
+?>
+
+--- B. models/BukuModel.php (CRUD Penuh) ---
+<?php
+class BukuModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    public function getSemuaBuku() { return $this->db->query("SELECT * FROM buku ORDER BY id_buku DESC"); }
+    public function getBukuById($id) { return$this->db->query("SELECT * FROM buku WHERE id_buku = ".(int)$id)->fetch_assoc(); }
+
+    public function tambahBuku($judul,$penulis, $kategori,$tahun) {
+        $judul = mysqli_real_escape_string($this->db, $judul);$penulis = mysqli_real_escape_string($this->db,$penulis);
+        return $this->db->query("INSERT INTO buku (judul, penulis, kategori, tahun_terbit) VALUES ('$judul', '$penulis', '$kategori', '$tahun')");
+    }
+
+    public function updateBuku($id, $judul,$penulis, $kategori,$tahun) {
+        $id = (int)$id;
+        $judul = mysqli_real_escape_string($this->db, $judul);$penulis = mysqli_real_escape_string($this->db,$penulis);
+        return $this->db->query("UPDATE buku SET judul='$judul', penulis='$penulis', kategori='$kategori', tahun_terbit='$tahun' WHERE id_buku=$id");
+    }
+
+    public function hapusBuku($id) { return$this->db->query("DELETE FROM buku WHERE id_buku = ".(int)$id); }
+}
+?>
+
+====================================================================
+4. CONTROLLERS (Polisi Lalu Lintas)
+====================================================================
+
+--- A. controllers/AuthController.php ---
+<?php
+require_once 'models/UserModel.php';
+class AuthController {
+    private $model;
+    public function __construct($koneksi) { 
+        $this->model = new UserModel($koneksi); 
+        if (session_status() === PHP_SESSION_NONE) session_start();
+    }
+
+    public function login() {
+        if(isset($_SESSION['is_login'])) { header("Location: index.php?page=dashboard"); exit; }
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $user =$_POST['username'];
+            $pass =$_POST['password'];
+            $cek =$this->model->cekLogin($user,$pass);
+            if ($cek) {$_SESSION['is_login'] = true;
+                $_SESSION['nama_lengkap'] = $cek['nama_lengkap'];$_SESSION['welcome_alert'] = true; // TRIGER POPUP NYAPA DI DASHBOARD NANTI
+                header("Location: index.php?page=dashboard"); exit;
+            } else {
+                header("Location: index.php?error=1"); exit;
+            }
+        }
+        require_once 'views/login.php';
+    }
+
+    public function register() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $user =$_POST['username'];
+            $pass =$_POST['password'];
+            $nama =$_POST['nama_lengkap'];
+            
+            if ($this->model->cekUsernameAda($user)) {
+                header("Location: index.php?page=register&error=ada"); exit;
+            } else {
+                $this->model->register($user, $pass,$nama);
+                header("Location: index.php?sukses=1"); exit;
+            }
+        }
+        require_once 'views/register.php';
+    }
+
+    public function logout() { session_destroy(); header("Location: index.php"); exit; }
+}
+?>
+
+--- B. controllers/BukuController.php ---
+<?php
+require_once 'models/BukuModel.php';
+class BukuController {
+    private $model;
+    public function __construct($koneksi) { $this->model = new BukuModel($koneksi); }
+
+    public function index() {
+        $data_buku =$this->model->getSemuaBuku();
+        require_once 'views/buku_tampil.php';
+    }
+
+    public function tambah() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {$this->model->tambahBuku($_POST['judul'],$_POST['penulis'], $_POST['kategori'],$_POST['tahun']);
+            header("Location: index.php?page=buku&pesan=sukses_tambah"); exit;
+        }
+        require_once 'views/buku_tambah.php';
+    }
+
+    public function edit() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $this->model->updateBuku($_POST['id_buku'], $_POST['judul'],$_POST['penulis'], $_POST['kategori'],$_POST['tahun']);
+            header("Location: index.php?page=buku&pesan=sukses_edit"); exit;
+        } else {
+            $buku_edit = $this->model->getBukuById($_GET['id']);
+            require_once 'views/buku_edit.php';
+        }
+    }
+
+    public function hapus() {
+        if (isset($_GET['id'])) $this->model->hapusBuku($_GET['id']);
+        header("Location: index.php?page=buku&pesan=sukses_hapus"); exit;
+    }
+}
+?>
+
+====================================================================
+5. VIEWS (UI Keren Pakai Bootstrap & SweetAlert2)
+====================================================================
+
+--- A. views/login.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Login - Pustaka</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light d-flex align-items-center" style="height: 100vh;">
+    <div class="container text-center">
+        <div class="card shadow-lg border-0 mx-auto" style="max-width: 400px; border-radius: 20px;">
+            <div class="card-body p-5">
+                <h3 class="fw-bold text-primary mb-4">Sistem Login</h3>
+                
+                <?php if(isset($_GET['error'])) echo '<div class="alert alert-danger small">Username/Password Salah!</div>'; ?>
+                <?php if(isset($_GET['sukses'])) echo '<div class="alert alert-success small">Akun dibuat! Silakan Login.</div>'; ?>
+                
+                <form action="index.php" method="POST">
+                    <input type="text" name="username" class="form-control mb-3 p-3 rounded-3" placeholder="Username" required>
+                    <input type="password" name="password" class="form-control mb-4 p-3 rounded-3" placeholder="Password" required>
+                    <button type="submit" class="btn btn-primary w-100 fw-bold p-3 rounded-3 shadow">LOG IN</button>
+                </form>
+                <div class="mt-4 small">
+                    Belum punya akun? <a href="index.php?page=register" class="fw-bold text-decoration-none">Sign Up di sini</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
+--- B. views/register.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Register - Pustaka</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light d-flex align-items-center" style="height: 100vh;">
+    <div class="container text-center">
+        <div class="card shadow-lg border-0 mx-auto" style="max-width: 400px; border-radius: 20px;">
+            <div class="card-body p-5">
+                <h3 class="fw-bold text-success mb-4">Buat Akun Baru</h3>
+                
+                <?php if(isset($_GET['error'])) echo '<div class="alert alert-danger small">Username sudah dipakai! Cari yang lain.</div>'; ?>
+                
+                <form action="index.php?page=register" method="POST">
+                    <input type="text" name="nama_lengkap" class="form-control mb-3 p-3 rounded-3" placeholder="Nama Lengkap" required>
+                    <input type="text" name="username" class="form-control mb-3 p-3 rounded-3" placeholder="Username Baru" required>
+                    <input type="password" name="password" class="form-control mb-4 p-3 rounded-3" placeholder="Password Baru" required>
+                    <button type="submit" class="btn btn-success w-100 fw-bold p-3 rounded-3 shadow">DAFTAR SEKARANG</button>
+                </form>
+                <div class="mt-4 small">
+                    Sudah punya akun? <a href="index.php" class="fw-bold text-decoration-none text-success">Sign In</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
+--- C. views/dashboard.php (Dengan SweetAlert "Menyapa") ---
+<?php 
+if (session_status() === PHP_SESSION_NONE) session_start();
+if (!isset($_SESSION['is_login'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Dashboard Perpus</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Wajib buat Alert Keren -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light">
+
+    <!-- NAVBAR -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm py-3">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#">📚 Pustaka SMKN 10</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link active" href="index.php?page=dashboard">Dashboard</a></li>
+                    <li class="nav-item"><a class="nav-link" href="index.php?page=buku">Kelola Buku</a></li>
+                </ul>
+                <span class="text-white me-3 fw-semibold">Hi, <?php echo $_SESSION['nama_lengkap']; ?>!</span>
+                <a href="index.php?page=logout" class="btn btn-danger btn-sm rounded-pill fw-bold">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-5 text-center">
+        <h1 class="fw-bold display-4 text-primary">Selamat Datang di Portal!</h1>
+        <p class="text-muted fs-5">Sistem Informasi Perpustakaan Digital</p>
+        <a href="index.php?page=buku" class="btn btn-primary btn-lg mt-3 shadow rounded-pill px-5 fw-bold">Masuk ke Data Buku</a>
+    </div>
+
+    <!-- SCRIPT ALERT MENYAPA -->
+    <?php if(isset($_SESSION['welcome_alert'])): ?>
+    <script>
+        Swal.fire({
+            title: 'Halo, <?php echo $_SESSION['nama_lengkap']; ?>! 👋',
+            text: 'Selamat bekerja dan kelola data hari ini ya.',
+            icon: 'success',
+            confirmButtonText: 'Siap Laksanakan!',
+            confirmButtonColor: '#0d6efd'
+        });
+    </script>
+    <?php unset($_SESSION['welcome_alert']); // Hapus alert biar ga muncul terus tiap di-refresh ?>
+    <?php endif; ?>
+
+</body>
+</html>
+
+--- D. views/buku_tampil.php (Tabel Data) ---
+<?php 
+if (session_status() === PHP_SESSION_NONE) session_start();
+if (!isset($_SESSION['is_login'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Data Buku</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+    <!-- NAVBAR -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm py-3 mb-4">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#">📚 Pustaka SMKN 10</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link" href="index.php?page=dashboard">Dashboard</a></li>
+                    <li class="nav-item"><a class="nav-link active fw-bold" href="index.php?page=buku">Kelola Buku</a></li>
+                </ul>
+                <a href="index.php?page=logout" class="btn btn-danger btn-sm rounded-pill fw-bold">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center py-3 rounded-top-4">
+                <h4 class="m-0 fw-bold text-primary">Daftar Koleksi Buku</h4>
+                <a href="index.php?page=tambah_buku" class="btn btn-success fw-bold rounded-pill shadow-sm">+ Tambah Baru</a>
+            </div>
+            <div class="card-body p-4">
+                <table class="table table-hover align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>No</th>
+                            <th>Judul Buku</th>
+                            <th>Penulis</th>
+                            <th>Kategori</th>
+                            <th>Tahun</th>
+                            <th>Aksi</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php $no=1; while($row =$data_buku->fetch_assoc()): ?>
+                        <tr>
+                            <td><?php echo $no++; ?></td>
+                            <td class="fw-bold text-dark"><?php echo $row['judul']; ?></td>
+                            <td><?php echo $row['penulis']; ?></td>
+                            <td><span class="badge bg-info text-dark"><?php echo $row['kategori']; ?></span></td>
+                            <td><?php echo $row['tahun_terbit']; ?></td>
+                            <td>
+                                <a href="index.php?page=edit_buku&id=<?php echo $row['id_buku']; ?>" class="btn btn-warning btn-sm fw-bold">Edit</a>
+                                <a href="index.php?page=hapus_buku&id=<?php echo $row['id_buku']; ?>" class="btn btn-danger btn-sm fw-bold" onclick="return confirm('Hapus buku ini?');">Hapus</a>
+                            </td>
+                        </tr>
+                        <?php endwhile; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
+--- E. views/buku_tambah.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Tambah Buku</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light py-5">
+    <div class="container">
+        <div class="card shadow border-0 mx-auto rounded-4 p-4" style="max-width: 500px;">
+            <h4 class="fw-bold mb-4 text-center">Input Buku Baru</h4>
+            <form action="index.php?page=tambah_buku" method="POST">
+                <div class="mb-3">
+                    <label>Judul Buku</label>
+                    <input type="text" name="judul" class="form-control" required>
+                </div>
+                <div class="mb-3">
+                    <label>Penulis</label>
+                    <input type="text" name="penulis" class="form-control" required>
+                </div>
+                <div class="mb-3">
+                    <label>Kategori</label>
+                    <select name="kategori" class="form-select" required>
+                        <option value="Fiksi">Fiksi</option>
+                        <option value="Pelajaran">Pelajaran</option>
+                        <option value="Teknologi">Teknologi</option>
+                    </select>
+                </div>
+                <div class="mb-4">
+                    <label>Tahun Terbit</label>
+                    <input type="number" name="tahun" class="form-control" required>
+                </div>
+                <button type="submit" class="btn btn-success w-100 fw-bold shadow">SIMPAN BUKU</button>
+                <a href="index.php?page=buku" class="btn btn-link w-100 mt-2 text-muted text-decoration-none">Batal</a>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+
+--- F. views/buku_edit.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Edit Buku</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light py-5">
+    <div class="container">
+        <div class="card shadow border-0 mx-auto rounded-4 p-4" style="max-width: 500px;">
+            <h4 class="fw-bold mb-4 text-center">Edit Data Buku</h4>
+            <form action="index.php?page=edit_buku" method="POST">
+                <input type="hidden" name="id_buku" value="<?php echo $buku_edit['id_buku']; ?>">
+                
+                <div class="mb-3">
+                    <label>Judul Buku</label>
+                    <input type="text" name="judul" class="form-control" value="<?php echo $buku_edit['judul']; ?>" required>
+                </div>
+                <div class="mb-3">
+                    <label>Penulis</label>
+                    <input type="text" name="penulis" class="form-control" value="<?php echo $buku_edit['penulis']; ?>" required>
+                </div>
+                <div class="mb-3">
+                    <label>Kategori</label>
+                    <select name="kategori" class="form-select" required>
+                        <option value="Fiksi" <?php if($buku_edit['kategori'] == 'Fiksi') echo 'selected'; ?>>Fiksi</option>
+                        <option value="Pelajaran" <?php if($buku_edit['kategori'] == 'Pelajaran') echo 'selected'; ?>>Pelajaran</option>
+                        <option value="Teknologi" <?php if($buku_edit['kategori'] == 'Teknologi') echo 'selected'; ?>>Teknologi</option>
+                    </select>
+                </div>
+                <div class="mb-4">
+                    <label>Tahun Terbit</label>
+                    <input type="number" name="tahun" class="form-control" value="<?php echo $buku_edit['tahun_terbit']; ?>" required>
+                </div>
+                <button type="submit" class="btn btn-warning w-100 fw-bold shadow">UPDATE BUKU</button>
+                <a href="index.php?page=buku" class="btn btn-link w-100 mt-2 text-muted text-decoration-none">Batal</a>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+
+====================================================================
+6. ROUTER (index.php) - Taruh Paling Luar!
+====================================================================
+<?php
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+require_once 'controllers/BukuController.php';
+
+$auth = new AuthController($koneksi);
+$buku = new BukuController($koneksi);
+
+$page = isset($_GET['page']) ?$_GET['page'] : '';
+
+switch ($page) {
+    // Rute Login & Register
+    case 'register': $auth->register(); break;
+    case 'logout': $auth->logout(); break;
+    
+    // Rute Dashboard
+    case 'dashboard': require_once 'views/dashboard.php'; break;
+    
+    // Rute CRUD Buku
+    case 'buku': $buku->index(); break;
+    case 'tambah_buku': $buku->tambah(); break;
+    case 'edit_buku': $buku->edit(); break;
+    case 'hapus_buku': $buku->hapus(); break;
+    
+    // Default masuk ke Login
+    default: $auth->login(); break;
+}
+?>
+====================================================================
