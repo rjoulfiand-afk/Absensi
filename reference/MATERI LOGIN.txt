@@ -1,0 +1,297 @@
+Ini dia kepingan puzzle terakhir alias "Master Skeleton" (Kerangka Utama) buat aplikasi lu cuy! Kalau sebelumnya kita fokus ke fitur spesifik (Waktu, Tabungan, E-Voting), sekarang kita fokus ke Arsitektur Multi-Menu, Routing, dan Alur Otentikasi (Login/Register -> Dashboard).
+
+Materi ini adalah pondasi utama. Kalau lu udah paham materi ini, lu bisa menggabungkan materi E-Voting di "Menu 1", materi Tabungan di "Menu 2", dan materi Perpus di "Menu 3" dalam satu aplikasi besar!
+
+Simpan ini sebagai MATERI_KERANGKA_MULTIMENU.txt. Gass kita bedah!
+
+Plaintext
+====================================================================================================
+MATERI FINAL: ARSITEKTUR MULTI-MENU, AUTHENTICATION FLOW, & ALUR CRUD MVC
+====================================================================================================
+
+[PENJELASAN ALUR LOGIN & REGISTER MENUJU DASHBOARD]
+1. REGISTER: 
+   Siswa isi form -> Submit via POST -> AuthController nangkap data -> AuthModel simpan ke tabel `users`.
+2. LOGIN:
+   Siswa isi Username & Password -> Submit POST -> AuthController ngecek ke AuthModel -> Jika Valid:
+3. SESSION CREATION:
+   AuthController membuat `$_SESSION['id_user']`. Ini adalah "Kunci Pas". Selama kunci ini ada, 
+   user tidak akan ditendang ke halaman login.
+4. REDIRECT:
+   Sistem melempar user via `header("Location: index.php?page=dashboard")`.
+5. GUARD (Satpam Halaman):
+   Di baris paling atas `dashboard.php` (dan halaman menu lainnya), kita pasang kode:
+   `if(!isset($_SESSION['id_user'])) { tendang ke login; }`
+
+[PENJELASAN ALUR "REAL-TIME" CRUD MVC (Sangat Jelas & Bebas Error)]
+Bagaimana data berpindah tanpa error? Ini rutenya:
+1. VIEW (Form Tambah): User klik "Simpan". Form ngirim data (POST) ke `index.php?page=tambah_data`.
+2. ROUTER (index.php): Menangkap kata `tambah_data` dan mengarahkannya ke `DataController->form_tambah()`.
+3. CONTROLLER: Menangkap `$_POST['nama']` dll, lalu menyuruh `DataModel->insertData(...)`.
+4. MODEL: Menjalankan perintah SQL `INSERT INTO...` ke Database.
+5. CONTROLLER (Lagi): Setelah Model selesai, Controller langsung meredirect balik `header("Location: index.php?page=menu1&pesan=sukses")`.
+6. VIEW (Tabel): Halaman me-refresh seketika, dan SweetAlert muncul menangkap parameter `?pesan=sukses`.
+
+====================================================================================================
+STRUKTUR FOLDER (PONDASI MULTI-MENU)
+====================================================================================================
+app_multimenu/
+├── config/database.php
+├── controllers/
+│   ├── AuthController.php
+│   ├── MenuSatuController.php    <- (Misal untuk data Siswa)
+│   └── MenuDuaController.php     <- (Misal untuk data Guru)
+├── models/
+│   ├── AuthModel.php
+│   └── DataModel.php             <- (Bisa digabung/dipisah per tabel)
+├── views/
+│   ├── layout/
+│   │   └── navbar.php            <- KUNCI MULTI-MENU! Biar gak nulis navbar berulang-ulang
+│   ├── login.php
+│   ├── register.php
+│   ├── dashboard.php
+│   ├── menu1_tampil.php          <- Halaman Menu 1
+│   └── menu2_tampil.php          <- Halaman Menu 2
+└── index.php                     <- Jantung Aplikasi (Router Utama)
+
+
+====================================================================================================
+1. DATABASE: SKEMA DASAR
+====================================================================================================
+CREATE DATABASE db_sekolah_master;
+USE db_sekolah_master;
+
+-- TABEL AUTH
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    nama_lengkap VARCHAR(100) NOT NULL,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL
+);
+
+-- TABEL MENU 1 (Contoh: Data Siswa)
+CREATE TABLE data_siswa (
+    id_siswa INT AUTO_INCREMENT PRIMARY KEY,
+    nama VARCHAR(100) NOT NULL,
+    kelas VARCHAR(50) NOT NULL
+);
+
+-- TABEL MENU 2 (Contoh: Data Guru)
+CREATE TABLE data_guru (
+    id_guru INT AUTO_INCREMENT PRIMARY KEY,
+    nama_guru VARCHAR(100) NOT NULL,
+    mata_pelajaran VARCHAR(100) NOT NULL
+);
+
+
+====================================================================================================
+2. JANTUNG APLIKASI: ROUTER (index.php) - TARUH DI LUAR FOLDER
+====================================================================================================
+Di sinilah lu mendaftarkan ke-4 menu (atau lebih) yang lu mau.
+
+<?php
+session_start();
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+require_once 'controllers/MenuSatuController.php';
+// require_once 'controllers/MenuDuaController.php'; (Kalau udah lu bikin)
+
+$auth = new AuthController($koneksi);
+$menu1 = new MenuSatuController($koneksi);
+
+// Parameter penentu halaman
+$page = isset($_GET['page']) ?$_GET['page'] : '';
+
+switch ($page) {
+    // --- AREA AUTH ---
+    case 'login': $auth->login(); break;
+    case 'register': $auth->register(); break;
+    case 'logout': $auth->logout(); break;
+
+    // --- MENU 0: DASHBOARD UTAMA ---
+    case 'dashboard':
+        if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        require_once 'views/dashboard.php'; 
+        break;
+
+    // --- MENU 1: KELOLA SISWA ---
+    case 'menu1':
+        if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $menu1->index(); 
+        break;
+    case 'tambah_menu1':
+        $menu1->tambah(); break;
+    
+    // --- MENU 2, MENU 3, MENU 4 ---
+    // Tinggal lu tambahin case-case baru di sini sesuai nama menu dan controllernya!
+
+    // --- DEFAULT ROOT ---
+    default:
+        // Jika sudah login, paksa ke dashboard. Jika belum, lempar ke login.
+        if(isset($_SESSION['id_user'])) { header("Location: index.php?page=dashboard"); exit; }
+        $auth->login(); 
+        break;
+}
+?>
+
+
+====================================================================================================
+3. TEKNIK RAHASIA NAVBAR DINAMIS (views/layout/navbar.php)
+====================================================================================================
+Kenapa harus dipisah ke folder `layout/`? Biar lu nggak perlu ngetik ulang menu navbar di setiap file view (dashboard.php, menu1_tampil.php, dll). Kalau mau nambah 1 menu baru, lu cukup edit 1 file ini, otomatis berubah di semua halaman!
+
+<!-- views/layout/navbar.php -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm py-3 mb-4">
+    <div class="container">
+        <a class="navbar-brand fw-bold" href="index.php?page=dashboard"><i class="fa-solid fa-school me-2"></i>SMKN 10 MASTER</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav me-auto">
+                <!-- INI DIA DAFTAR MENU LU! -->
+                <li class="nav-item">
+                    <a class="nav-link <?php echo ($_GET['page'] == 'dashboard' \vert{}\vert{} empty($_GET['page'])) ? 'active fw-bold' : ''; ?>" href="index.php?page=dashboard">Dashboard</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link <?php echo ($_GET['page'] == 'menu1') ? 'active fw-bold' : ''; ?>" href="index.php?page=menu1">Data Siswa</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link <?php echo ($_GET['page'] == 'menu2') ? 'active fw-bold' : ''; ?>" href="index.php?page=menu2">Data Guru</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link <?php echo ($_GET['page'] == 'menu3') ? 'active fw-bold' : ''; ?>" href="index.php?page=menu3">Laporan</a>
+                </li>
+            </ul>
+            <span class="text-white me-3 fw-semibold">Halo, <?php echo $_SESSION['nama']; ?>!</span>
+            <a href="index.php?page=logout" class="btn btn-danger btn-sm rounded-pill px-3 fw-bold shadow-sm">Logout</a>
+        </div>
+    </div>
+</nav>
+
+
+====================================================================================================
+4. HALAMAN VIEW YANG MENGGUNAKAN NAVBAR (views/dashboard.php)
+====================================================================================================
+Perhatikan cara memangil Navbar-nya pakai `include`.
+
+<?php 
+if(session_status() === PHP_SESSION_NONE) session_start();
+if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Dashboard Utama</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light">
+
+    <!-- MAGISNYA DI SINI: Panggil file navbar satu kali aja! -->
+    <?php include 'views/layout/navbar.php'; ?>
+
+    <!-- KONTEN DASHBOARD -->
+    <div class="container">
+        <div class="card border-0 shadow-lg rounded-4 p-5 text-center bg-white">
+            <h1 class="display-5 fw-bold text-dark mb-3">Selamat Datang di Portal Utama!</h1>
+            <p class="text-muted fs-5 mb-5">Silakan pilih menu di navigasi atas untuk mengelola data operasional sekolah.</p>
+            
+            <div class="row g-4 justify-content-center">
+                <!-- Pintasan Menu 1 -->
+                <div class="col-md-4">
+                    <div class="card border border-primary border-2 shadow-sm rounded-4 p-4 h-100">
+                        <i class="fa-solid fa-users fa-3x text-primary mb-3"></i>
+                        <h4 class="fw-bold">Kelola Siswa</h4>
+                        <a href="index.php?page=menu1" class="btn btn-primary rounded-pill mt-auto w-100 fw-bold">Buka Modul</a>
+                    </div>
+                </div>
+                <!-- Pintasan Menu 2 -->
+                <div class="col-md-4">
+                    <div class="card border border-success border-2 shadow-sm rounded-4 p-4 h-100">
+                        <i class="fa-solid fa-chalkboard-user fa-3x text-success mb-3"></i>
+                        <h4 class="fw-bold">Kelola Guru</h4>
+                        <a href="index.php?page=menu2" class="btn btn-success rounded-pill mt-auto w-100 fw-bold">Buka Modul</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
+
+====================================================================================================
+5. HALAMAN VIEW MENU 1 (views/menu1_tampil.php)
+====================================================================================================
+Sama seperti dashboard, tinggal include navbar!
+
+<?php 
+if(session_status() === PHP_SESSION_NONE) session_start();
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Data Siswa</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+
+    <!-- PANGGIL NAVBAR LAGI -->
+    <?php include 'views/layout/navbar.php'; ?>
+
+    <div class="container">
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white p-4 border-0 d-flex justify-content-between align-items-center">
+                <h4 class="fw-bold m-0 text-primary">Master Data Siswa</h4>
+                <a href="index.php?page=tambah_menu1" class="btn btn-primary rounded-pill fw-bold">+ Tambah Siswa</a>
+            </div>
+            <div class="card-body p-4 pt-0">
+                <!-- TABEL CRUD BISA LU TARUH DI SINI -->
+                <p>Isi tabel CRUD lu dari materi-materi sebelumnya cuy!</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+🔥 PANDUAN SUPER JELAS: Cara Menambah Menu ke-4, ke-5, dan Seterusnya
+Katakanlah lu disuruh bikin menu baru: "Data SPP". Gimana alurnya dari nol? Ikuti 5 langkah pasti ini:
+
+Langkah 1: Bikin Tabel di Database
+Buka phpMyAdmin, bikin tabel baru data_spp (id, nama_siswa, bulan, jumlah).
+
+Langkah 2: Daftarin di Navbar (views/layout/navbar.php)
+Tambahin kode HTML <li> baru di dalam list menu lu:
+
+HTML
+<li class="nav-item">
+    <a class="nav-link <?php echo ($_GET['page'] == 'data_spp') ? 'active fw-bold' : ''; ?>" href="index.php?page=data_spp">Data SPP</a>
+</li>
+Hasilnya: Tombol "Data SPP" sekarang muncul di bagian atas semua halaman! Tapi kalau diklik belum bisa, makanya lanjut ke Langkah 3.
+
+Langkah 3: Daftarin Rutenya di Router (index.php)
+Buka index.php, gulir ke bagian switch ($page), tambahin ini:
+
+PHP
+case 'data_spp':
+    if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+    // Asumsi lu udah bikin file controllernya
+    require_once 'controllers/SppController.php';
+    $spp = new SppController($koneksi);
+    $spp->index(); 
+    break;
+Langkah 4: Bikin Model & Controller (models/SppModel.php & controllers/SppController.php)
+
+Model: Isi dengan perintah SELECT * FROM data_spp, INSERT INTO data_spp, dll (Bisa nyontek kode Model CRUD dari materi-materi gw sebelumnya).
+
+Controller: Tangkap datanya pakai $_POST, kirim ke model, dan atur require_once 'views/spp_tampil.php';.
+
+Langkah 5: Bikin File Tampilannya (views/spp_tampil.php)
+Bikin file HTML baru. Jangan lupa masukin kode magis ini di dalam tag <body> biar navbarnya muncul:
+
+PHP
+<?php include 'views/layout/navbar.php'; ?>
+Lalu bikin tabel pakai Bootstrap di bawahnya!
+
+Selesai cuy! Konsep pemisahan navbar.php dan penggunaan switch-case di index.php ini adalah Rahasia Arsitektur Web Skala Besar. Dengan cara ini, lu mau disuruh bikin 4 menu, 10 menu, atau 100 menu sekalipun, aplikasinya nggak akan error dan kodenya tetep rapi! Gass pelajari alurnya!
