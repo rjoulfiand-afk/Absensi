@@ -1,0 +1,475 @@
+====================================================================================================
+MATERI TEKNIS MENYELURUH: SISTEM INVENTORI & PEMINJAMAN (ACID STOCK CONTROL & CONCURRENCY)
+====================================================================================================
+
+[DAFTAR ISI ARSITEKTUR]
+1. Arsitektur Alur Inventori & Pencegahan Stok Minus (Concurrency Lock)
+2. Struktur Folder Standar MVC
+3. Konfigurasi Skema Database, Foreign Key & Relasi (SQL)
+4. Layer Model: Transaksi Bersyarat & Sinkronisasi Stok Real-Time (models/)
+5. Layer Controller: Filter Logika Pinjam & Pengembalian (controllers/)
+6. Layer Views: UI Modern Bootstrap 5, Badge Status, & Form Transaksi (views/)
+7. Central Router (index.php)
+
+====================================================================================================
+1. ARSITEKTUR ALUR & LOGIKA STOK ANTI-MINUS
+====================================================================================================
+A. Struktur Multi-Stok:
+   Tabel barang memiliki 2 kolom stok: `stok_total` (jumlah aset fisik sekolah) dan `stok_tersedia` 
+   (stok yang saat ini ada di gudang dan siap dipinjam). 
+
+B. Siklus Transaksi Peminjaman (Pintu Keluar):
+   [Siswa/Guru Pinjam 2 Unit] -> [Start Transaction] -> [Kunci Baris Barang `FOR UPDATE`] 
+   -> [Cek: Apakah stok_tersedia >= 2?] 
+      -> Jika YA: Insert data peminjaman -> Update stok_tersedia = stok_tersedia - 2 -> Commit.
+      -> Jika TIDAK: Rollback -> Tampilkan Error "Stok Tidak Cukup".
+
+C. Siklus Pengembalian (Pintu Masuk):
+   [Klik Tombol Kembalikan] -> [Start Transaction] -> [Cek Status Peminjaman]
+   -> Jika status masih 'Dipinjam': Update status jadi 'Dikembalikan' & catat jam pengembalian
+   -> Update stok_tersedia = stok_tersedia + 2 -> Commit.
+
+====================================================================================================
+2. STRUKTUR FOLDER LENGKAP
+====================================================================================================
+app_inventori/
+│
+├── config/database.php
+├── models/
+│   ├── AuthModel.php               <- Login Petugas Sarpras
+│   ├── BarangModel.php             <- CRUD Master Data Barang
+│   └── TransaksiModel.php          <- Logika Peminjaman & Pengembalian + ACID
+├── controllers/
+│   ├── AuthController.php
+│   ├── BarangController.php
+│   └── TransaksiController.php
+├── views/
+│   ├── login.php
+│   ├── dashboard.php               <- Ringkasan Aset & Barang Keluar
+│   ├── master_barang.php           <- Tabel CRUD Barang
+│   ├── log_peminjaman.php          <- Riwayat & Aksi Pengembalian
+│   └── form_pinjam.php             <- UI Input Peminjaman
+└── index.php
+
+====================================================================================================
+3. KONFIGURASI SKEMA DATABASE (MySQL Script)
+====================================================================================================
+CREATE DATABASE IF NOT EXISTS db_inventori_pro;
+USE db_inventori_pro;
+
+-- 1. TABEL PETUGAS
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    nama_petugas VARCHAR(100) NOT NULL,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL
+) ENGINE=InnoDB;
+
+INSERT INTO users (nama_petugas, username, password_hash) 
+VALUES ('Kepala Sarpras', 'admin', '$2y$10$w8T.N0b3aO96R/v2uD0.Oeqo2UvFw8Gmsl.b/6Gk2bE1kK7G31bSu');
+-- (Password aslinya adalah: admin123)
+
+-- 2. TABEL MASTER BARANG
+CREATE TABLE barang (
+    id_barang INT AUTO_INCREMENT PRIMARY KEY,
+    kode_barang VARCHAR(20) NOT NULL UNIQUE,
+    nama_barang VARCHAR(150) NOT NULL,
+    kategori VARCHAR(50) NOT NULL,
+    stok_total INT NOT NULL,       -- Fisik asli yang dimiliki sekolah
+    stok_tersedia INT NOT NULL,    -- Yang bisa dipinjam saat ini
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+INSERT INTO barang (kode_barang, nama_barang, kategori, stok_total, stok_tersedia) VALUES 
+('INV-PRJ-01', 'Proyektor Epson EB-X400', 'Elektronik', 10, 10),
+('INV-KBL-01', 'Kabel Roll 15 Meter', 'Kelistrikan', 5, 5),
+('INV-SND-01', 'Speaker Portable', 'Audio', 2, 2);
+
+-- 3. TABEL TRANSAKSI PEMINJAMAN
+CREATE TABLE peminjaman (
+    id_pinjam INT AUTO_INCREMENT PRIMARY KEY,
+    kode_transaksi VARCHAR(30) NOT NULL UNIQUE,
+    id_barang INT NOT NULL,
+    peminjam VARCHAR(100) NOT NULL,
+    kelas_instansi VARCHAR(50) NOT NULL,
+    jumlah_pinjam INT NOT NULL,
+    tgl_pinjam DATETIME NOT NULL,
+    tgl_kembali DATETIME NULL,     -- Kosong jika belum dikembalikan
+    status ENUM('Dipinjam', 'Dikembalikan') DEFAULT 'Dipinjam',
+    keterangan TEXT,
+    FOREIGN KEY (id_barang) REFERENCES barang(id_barang) ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+====================================================================================================
+4. KONEKSI & LAYER MODELS (CORE LOGIC)
+====================================================================================================
+
+--- A. config/database.php ---
+<?php
+date_default_timezone_set('Asia/Jakarta');
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+
+try {
+    $koneksi = new mysqli('localhost', 'root', '', 'db_inventori_pro');$koneksi->set_charset("utf8mb4");
+} catch (mysqli_sql_exception $e) {
+    die("Error Database: " . $e->getMessage());
+}
+?>
+
+--- B. models/BarangModel.php ---
+<?php
+class BarangModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    public function getAllBarang() {
+        return $this->db->query("SELECT * FROM barang ORDER BY nama_barang ASC");
+    }
+
+    public function getBarangTersedia() {
+        return $this->db->query("SELECT * FROM barang WHERE stok_tersedia > 0 ORDER BY nama_barang ASC");
+    }
+
+    public function tambahBarang($kode,$nama, $kategori,$stok) {
+        $stmt =$this->db->prepare("INSERT INTO barang (kode_barang, nama_barang, kategori, stok_total, stok_tersedia) VALUES (?, ?, ?, ?, ?)");
+        $stmt->bind_param("sssii", $kode, $nama,$kategori, $stok,$stok);
+        return $stmt->execute();
+    }
+}
+?>
+
+--- C. models/TransaksiModel.php (SISTEM KUNCI STOK ACID) ---
+<?php
+class TransaksiModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    public function getRiwayat() {
+        $query = "SELECT p.*, b.nama_barang, b.kode_barang 
+                  FROM peminjaman p 
+                  JOIN barang b ON p.id_barang = b.id_barang 
+                  ORDER BY p.tgl_pinjam DESC";
+        return $this->db->query($query);
+    }
+
+    // LOGIKA PEMINJAMAN (MENGURANGI STOK AMAN)
+    public function pinjamBarang($id_barang,$peminjam, $kelas,$jumlah, $ket) {$this->db->begin_transaction();
+        try {
+            // 1. Kunci baris barang agar tidak dibaca transaksi lain bersamaan
+            $stmtCek =$this->db->prepare("SELECT stok_tersedia FROM barang WHERE id_barang = ? FOR UPDATE");
+            $stmtCek->bind_param("i", $id_barang);$stmtCek->execute();
+            $hasil =$stmtCek->get_result()->fetch_assoc();
+
+            // 2. Validasi Ketersediaan Stok
+            if (!$hasil \vert{}\vert{}$hasil['stok_tersedia'] < $jumlah) {$this->db->rollback();
+                return 'STOK_KURANG';
+            }
+
+            // 3. Generate Kode Transaksi Unik (Contoh: TRX-20260922-1234)
+            $kode_trx = "TRX-" . date('Ymd') . "-" . rand(1000, 9999);
+            $waktu = date('Y-m-d H:i:s');
+
+            // 4. Catat ke Tabel Peminjaman
+            $stmtPinjam =$this->db->prepare("INSERT INTO peminjaman (kode_transaksi, id_barang, peminjam, kelas_instansi, jumlah_pinjam, tgl_pinjam, status, keterangan) VALUES (?, ?, ?, ?, ?, ?, 'Dipinjam', ?)");
+            $stmtPinjam->bind_param("sisssis", $kode_trx,$id_barang, $peminjam,$kelas, $jumlah,$waktu, $ket);$stmtPinjam->execute();
+
+            // 5. Potong Stok Tersedia
+            $stmtStok =$this->db->prepare("UPDATE barang SET stok_tersedia = stok_tersedia - ? WHERE id_barang = ?");
+            $stmtStok->bind_param("ii", $jumlah, $id_barang);$stmtStok->execute();
+
+            $this->db->commit();
+            return 'SUKSES';
+
+        } catch (Exception $e) {$this->db->rollback();
+            return 'ERROR_SYSTEM';
+        }
+    }
+
+    // LOGIKA PENGEMBALIAN (MENAMBAH STOK KEMBALI)
+    public function kembalikanBarang($id_pinjam) {$this->db->begin_transaction();
+        try {
+            // 1. Kunci data peminjaman
+            $stmtCek =$this->db->prepare("SELECT id_barang, jumlah_pinjam, status FROM peminjaman WHERE id_pinjam = ? FOR UPDATE");
+            $stmtCek->bind_param("i", $id_pinjam);$stmtCek->execute();
+            $trx =$stmtCek->get_result()->fetch_assoc();
+
+            // Mencegah klik ganda tombol kembali
+            if (!$trx || $trx['status'] === 'Dikembalikan') {$this->db->rollback();
+                return false; 
+            }
+
+            $waktu_kembali = date('Y-m-d H:i:s');
+
+            // 2. Ubah status dan catat waktu kembali
+            $stmtUpdateTrx =$this->db->prepare("UPDATE peminjaman SET status = 'Dikembalikan', tgl_kembali = ? WHERE id_pinjam = ?");
+            $stmtUpdateTrx->bind_param("si", $waktu_kembali, $id_pinjam);$stmtUpdateTrx->execute();
+
+            // 3. Kembalikan stok ke gudang
+            $stmtRestok =$this->db->prepare("UPDATE barang SET stok_tersedia = stok_tersedia + ? WHERE id_barang = ?");
+            $stmtRestok->bind_param("ii", $trx['jumlah_pinjam'], $trx['id_barang']);$stmtRestok->execute();
+
+            $this->db->commit();
+            return true;
+        } catch (Exception $e) {$this->db->rollback();
+            return false;
+        }
+    }
+}
+?>
+
+====================================================================================================
+5. LAYER CONTROLLERS
+====================================================================================================
+
+--- controllers/TransaksiController.php ---
+<?php
+require_once 'models/TransaksiModel.php';
+require_once 'models/BarangModel.php';
+
+class TransaksiController {
+    private $trxModel;
+    private $brgModel;
+
+    public function __construct($koneksi) {
+        $this->trxModel = new TransaksiModel($koneksi);
+        $this->brgModel = new BarangModel($koneksi);
+        if (session_status() === PHP_SESSION_NONE) session_start();
+    }
+
+    public function index() {
+        $riwayat =$this->trxModel->getRiwayat();
+        require_once 'views/log_peminjaman.php';
+    }
+
+    public function form_pinjam() {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $id_barang = (int)$_POST['id_barang'];
+            $peminjam =$_POST['peminjam'];
+            $kelas =$_POST['kelas'];
+            $jumlah = (int)$_POST['jumlah'];
+            $ket =$_POST['keterangan'];
+
+            if ($jumlah <= 0) {
+                header("Location: index.php?page=transaksi&pesan=jumlah_invalid"); exit;
+            }
+
+            $proses = $this->trxModel->pinjamBarang($id_barang, $peminjam,$kelas, $jumlah,$ket);
+
+            if ($proses === 'SUKSES') {                 header("Location: index.php?page=transaksi&pesan=pinjam_sukses"); exit;             } elseif ($proses === 'STOK_KURANG') {
+                header("Location: index.php?page=transaksi&pesan=stok_limit"); exit;
+            } else {
+                header("Location: index.php?page=transaksi&pesan=error_server"); exit;
+            }
+        }
+        
+        $barang_siap =$this->brgModel->getBarangTersedia();
+        require_once 'views/form_pinjam.php';
+    }
+
+    public function aksi_kembali() {
+        if (isset($_GET['id'])) {$sukses = $this->trxModel->kembalikanBarang($_GET['id']);
+            if ($sukses) {
+                header("Location: index.php?page=transaksi&pesan=kembali_sukses"); exit;
+            } else {
+                header("Location: index.php?page=transaksi&pesan=gagal_kembali"); exit;
+            }
+        }
+    }
+}
+?>
+
+====================================================================================================
+6. LAYER VIEWS (UI/UX)
+====================================================================================================
+
+--- A. views/log_peminjaman.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Sirkulasi Inventori</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style> body { background-color: #f4f7fc; } </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm py-3 mb-4">
+        <div class="container">
+            <span class="navbar-brand fw-bold"><i class="fa-solid fa-boxes-packing me-2"></i>Sistem Sarpras</span>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link" href="index.php?page=barang">Master Barang</a></li>
+                    <li class="nav-item"><a class="nav-link active fw-bold" href="index.php?page=transaksi">Sirkulasi</a></li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <?php if(isset($_GET['pesan'])): ?>
+            <script>
+                const p = '<?php echo $_GET['pesan']; ?>';
+                if(p === 'pinjam_sukses') Swal.fire('Tercatat!', 'Barang berhasil dipinjam. Stok gudang otomatis terpotong.', 'success');
+                if(p === 'kembali_sukses') Swal.fire('Dikembalikan!', 'Barang telah kembali. Stok gudang diperbarui.', 'success');
+                if(p === 'stok_limit') Swal.fire('Stok Kurang!', 'Jumlah barang yang diminta melebihi stok yang tersedia saat ini!', 'error');
+                if(p === 'jumlah_invalid') Swal.fire('Error!', 'Jumlah pinjam minimal 1 unit.', 'warning');
+            </script>
+        <?php endif; ?>
+
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center py-4 border-0 rounded-top-4">
+                <h4 class="fw-bold m-0 text-dark">Data Sirkulasi Peminjaman</h4>
+                <a href="index.php?page=form_pinjam" class="btn btn-primary fw-bold rounded-pill shadow-sm px-4">
+                    <i class="fa-solid fa-hand-holding-hand me-1"></i> Input Pinjaman Baru
+                </a>
+            </div>
+            
+            <div class="card-body p-4 pt-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle border">
+                        <thead class="table-light text-secondary">
+                            <tr>
+                                <th>Kode Trx</th>
+                                <th>Peminjam</th>
+                                <th>Barang (Qty)</th>
+                                <th>Waktu Pinjam</th>
+                                <th>Status</th>
+                                <th class="text-center">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php while($row =$riwayat->fetch_assoc()): ?>
+                            <tr>
+                                <td>
+                                    <span class="fw-bold text-dark font-monospace"><?php echo $row['kode_transaksi']; ?></span>
+                                </td>
+                                <td>
+                                    <span class="fw-bold text-primary"><?php echo $row['peminjam']; ?></span><br>
+                                    <small class="text-muted"><i class="fa-solid fa-users-rectangle me-1"></i><?php echo $row['kelas_instansi']; ?></small>
+                                </td>
+                                <td>
+                                    <span class="fw-bold"><?php echo $row['nama_barang']; ?></span><br>
+                                    <span class="badge bg-secondary"><?php echo $row['jumlah_pinjam']; ?> Unit</span>
+                                </td>
+                                <td>
+                                    <span class="text-dark fw-semibold"><?php echo date('d M Y', strtotime($row['tgl_pinjam'])); ?></span><br>
+                                    <small class="text-muted"><i class="fa-regular fa-clock me-1"></i><?php echo date('H:i', strtotime($row['tgl_pinjam'])); ?> WIB</small>
+                                </td>
+                                <td>
+                                    <?php if($row['status'] == 'Dipinjam'): ?>
+                                        <span class="badge bg-warning text-dark rounded-pill px-3 py-2"><i class="fa-solid fa-hourglass-half me-1"></i> Dipinjam</span>
+                                    <?php else: ?>
+                                        <span class="badge bg-success rounded-pill px-3 py-2"><i class="fa-solid fa-check me-1"></i> Dikembalikan</span>
+                                        <div class="small text-muted mt-1"><i class="fa-solid fa-arrow-turn-down me-1"></i><?php echo date('d/m/y H:i', strtotime($row['tgl_kembali'])); ?></div>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="text-center">
+                                    <?php if($row['status'] == 'Dipinjam'): ?>
+                                        <a href="index.php?page=kembalikan&id=<?php echo $row['id_pinjam']; ?>" 
+                                           class="btn btn-sm btn-success fw-bold rounded-pill shadow-sm"
+                                           onclick="return confirm('Proses pengembalian barang ini ke gudang?');">
+                                            Kembalikan
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="text-muted small fst-italic">Selesai</span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <?php endwhile; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
+--- B. views/form_pinjam.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Input Pinjaman Baru</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light py-5">
+    <div class="container">
+        <div class="card border-0 shadow-lg mx-auto rounded-4 p-5" style="max-width: 650px;">
+            <div class="text-center mb-4">
+                <h3 class="fw-bold text-primary">Formulir Peminjaman Sarpras</h3>
+                <p class="text-muted small">Pilih barang yang tersedia dan pastikan jumlah tidak melebihi stok gudang.</p>
+            </div>
+            
+            <form action="index.php?page=form_pinjam" method="POST">
+                <div class="row g-3 mb-3">
+                    <div class="col-md-7">
+                        <label class="form-label fw-bold small text-muted">Nama Peminjam</label>
+                        <input type="text" name="peminjam" class="form-control bg-light border-0" placeholder="Contoh: Rixsan Joulfiand" required>
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label fw-bold small text-muted">Kelas / Bagian</label>
+                        <input type="text" name="kelas" class="form-control bg-light border-0" placeholder="Contoh: XII RPL 1" required>
+                    </div>
+                </div>
+
+                <div class="row g-3 mb-4 pt-3 border-top">
+                    <div class="col-md-9">
+                        <label class="form-label fw-bold small text-muted">Pilih Barang (Stok Tersedia)</label>
+                        <select name="id_barang" class="form-select bg-light border-0 fw-bold border-start border-4 border-primary" required>
+                            <option value="" disabled selected>Pilih Barang...</option>
+                            <?php while($b =$barang_siap->fetch_assoc()): ?>
+                                <option value="<?php echo $b['id_barang']; ?>">
+                                    [<?php echo $b['kode_barang']; ?>] <?php echo $b['nama_barang']; ?> - Stok: <?php echo$b['stok_tersedia']; ?> Unit
+                                </option>
+                            <?php endwhile; ?>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label fw-bold small text-muted">Qty (Unit)</label>
+                        <input type="number" name="jumlah" class="form-control bg-light border-0 fw-bold text-center border-start border-4 border-warning" min="1" value="1" required>
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <label class="form-label fw-bold small text-muted">Tujuan Penggunaan (Opsional)</label>
+                    <textarea name="keterangan" class="form-control bg-light border-0" rows="2" placeholder="Contoh: Dipakai untuk presentasi tugas akhir"></textarea>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-lg w-100 fw-bold rounded-pill shadow">VALIDASI & PROSES PINJAMAN</button>
+                <div class="text-center mt-3"><a href="index.php?page=transaksi" class="text-decoration-none fw-bold text-muted">Batal</a></div>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+
+====================================================================================================
+7. ROUTER (index.php)
+====================================================================================================
+<?php
+session_start();
+require_once 'config/database.php';
+require_once 'controllers/TransaksiController.php';
+// Anggap AuthController & BarangController sudah dibuat seperti pola universal sebelumnya
+
+$transaksi = new TransaksiController($koneksi);
+$page =$_GET['page'] ?? 'transaksi';
+
+switch ($page) {
+    case 'transaksi':
+        // Cek Auth di sini (opsional untuk pengembangan)
+        $transaksi->index();
+        break;
+
+    case 'form_pinjam':
+        $transaksi->form_pinjam();
+        break;
+
+    case 'kembalikan':
+        $transaksi->aksi_kembali();
+        break;
+
+    // Tambahkan case 'barang', 'tambah_barang', dll.
+}
+?>
+====================================================================================================

@@ -1,0 +1,994 @@
+====================================================================================================
+MATERI TEKNIS MENYELURUH: SISTEM E-VOTING OSIS REAL-TIME (ACID TRANSACTIONS & LIVE DATA ENGINE)
+====================================================================================================
+
+[DAFTAR ISI ARSITEKTUR]
+1. Arsitektur Alur & Protokol Keamanan (Anti-Fraud & One-Man-One-Vote)
+2. Struktur Folder Standar PSR MVC
+3. Konfigurasi Skema Database Relasional, Indexing, & Foreign Keys (SQL)
+4. Mesin Koneksi Database & Exception Handler (config/database.php)
+5. Layer Model: Transaksi Bersyarat & Agregasi Matematika Persentase (models/)
+6. Layer Controller: Token Handshake, Guard Filter, & Endpoint JSON REST API (controllers/)
+7. Layer Views: UI Dark/Glassmorphism Bootstrap 5 & Async Polling Engine (views/)
+8. Central Router & Front Controller (index.php)
+
+====================================================================================================
+1. ARSITEKTUR ALUR & PROTOKOL KEAMANAN (ANTI-FRAUD)
+====================================================================================================
+A. Autentikasi Ganda (Role Separation):
+   - Admin/Panitia: Menggunakan pasangan Username & Password terenkripsi Hash. Mendapatkan hak akses
+     ke Dashboard Monitoring dan pengawasan hasil suara.
+   - Pemilih (Siswa): Menggunakan Nomor Induk Siswa Nasional (NISN) dan Token Akses Rahasia 6 digit.
+     Hanya dapat melihat halaman bilik pencoblosan (Ballot Box).
+
+B. Siklus Transaksi Hak Suara (State Machine):
+   [Siswa Login] -> [Validasi Token & Status Vote] -> [Masuk Bilik] 
+                 -> [Kirim Suara via POST] -> [Database Transaction Start]
+                 -> [Update Jumlah Suara Paslon] -> [Kunci Status Pemilih = 'Sudah'] 
+                 -> [Commit Transaksi] -> [Regenerate Sesi / Destroy Sesi] -> [Keluar]
+
+C. Penanganan Race Condition & Atomic Locks:
+   Untuk mencegah anomali di mana 1 pemilih membuka 2 tab browser secara bersamaan dan menekan tombol
+   coblos dalam milidetik yang sama, Model menggunakan `mysqli_begin_transaction()` serta validasi baris
+   ganda: pemilih hanya dapat dieksekusi jika statusnya saat itu masih 'Belum'.
+
+D. Live Data Polling (Asynchronous):
+   Dashboard Admin tidak melakukan refresh halaman secara manual (`F5`). JavaScript (Fetch API) secara 
+   berkala mengirimkan HTTP Request latar belakang setiap 2500ms ke Router (`?page=api_live_count`).
+   Router mengembalikan data JSON teragregasi yang langsung diinjeksikan ke lebar elemen Progress Bar.
+
+====================================================================================================
+2. STRUKTUR FOLDER LENGKAP
+====================================================================================================
+app_evoting_pro/
+│
+├── config/
+│   └── database.php                <- Pengaturan koneksi MySQLi & penanganan error
+│
+├── models/
+│   ├── AdminModel.php              <- Validasi kredensial panitia pemilihan
+│   ├── PemilihModel.php            <- Pengelolaan data siswa & verifikasi hak pilih
+│   └── KandidatModel.php           <- Eksekusi suara, kunci pemilih, & kalkulasi persentase
+│
+├── controllers/
+│   ├── AuthController.php          <- Penanganan sesi login, otentikasi role, & logout
+│   ├── BilikController.php         <- Penanganan alur pencoblosan siswa
+│   └── DashboardController.php     <- Penanganan monitoring visual & output endpoint API JSON
+│
+├── views/
+│   ├── login.php                   <- Antarmuka pemilihan peran login (Siswa / Panitia)
+│   ├── bilik_suara.php             <- Antarmuka pencoblosan interaktif berbasis kartu kandidat
+│   └── dashboard_admin.php         <- Monitoring real-time perolehan suara (Live Progress)
+│
+└── index.php                       <- Front controller tunggal / pintu gerbang rute aplikasi
+
+====================================================================================================
+3. KONFIGURASI SKEMA DATABASE (phpMyAdmin / MySQL Script)
+====================================================================================================
+-- Buat Database Baru
+CREATE DATABASE IF NOT EXISTS db_evoting_pro CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE db_evoting_pro;
+
+-- Bersihkan Tabel Lama
+DROP TABLE IF EXISTS log_audit;
+DROP TABLE IF EXISTS kandidat;
+DROP TABLE IF EXISTS pemilih;
+DROP TABLE IF EXISTS users_admin;
+
+-- 1. TABEL ADMIN PANITIA
+CREATE TABLE users_admin (
+    id_admin INT AUTO_INCREMENT PRIMARY KEY,
+    nama_petugas VARCHAR(100) NOT NULL,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- Masukkan Petugas Default (Password plaintext 'admin123' ter-hash Bcrypt)
+INSERT INTO users_admin (nama_petugas, username, password_hash) 
+VALUES ('Panitia Pemilihan OSIS', 'admin', '$2y$10$w8T.N0b3aO96R/v2uD0.Oeqo2UvFw8Gmsl.b/6Gk2bE1kK7G31bSu');
+
+-- 2. TABEL PEMILIH (SISWA)
+CREATE TABLE pemilih (
+    id_pemilih INT AUTO_INCREMENT PRIMARY KEY,
+    nisn VARCHAR(20) NOT NULL UNIQUE,
+    nama_siswa VARCHAR(100) NOT NULL,
+    kelas VARCHAR(30) NOT NULL,
+    token_akses VARCHAR(10) NOT NULL,
+    status_vote ENUM('Belum', 'Sudah') DEFAULT 'Belum',
+    waktu_memilih DATETIME NULL,
+    INDEX idx_nisn_token (nisn, token_akses)
+) ENGINE=InnoDB;
+
+-- Masukkan Data Dummy Pemilih
+INSERT INTO pemilih (nisn, nama_siswa, kelas, token_akses, status_vote) VALUES 
+('1001', 'Rixsan Joulfiand', 'XII RPL 1', 'TK0192', 'Belum'),
+('1002', 'Budi Hartono', 'XII RPL 1', 'TK0841', 'Belum'),
+('1003', 'Siti Maulida', 'XII RPL 2', 'TK0339', 'Belum'),
+('1004', 'Achmad Dani', 'XII TKJ 1', 'TK0712', 'Belum'),
+('1005', 'Dewi Lestari', 'XII TKJ 2', 'TK0994', 'Belum');
+
+-- 3. TABEL KANDIDAT KETUA & WAKIL OSIS
+CREATE TABLE kandidat (
+    id_kandidat INT AUTO_INCREMENT PRIMARY KEY,
+    no_urut INT NOT NULL UNIQUE,
+    nama_ketua VARCHAR(100) NOT NULL,
+    nama_wakil VARCHAR(100) NOT NULL,
+    visi TEXT NOT NULL,
+    misi TEXT NOT NULL,
+    warna_tema VARCHAR(20) DEFAULT '#0d6efd',
+    total_suara INT DEFAULT 0
+) ENGINE=InnoDB;
+
+-- Masukkan Pasangan Calon (Paslon)
+INSERT INTO kandidat (no_urut, nama_ketua, nama_wakil, visi, misi, warna_tema, total_suara) VALUES 
+(1, 'Aris Munandar', 'Fani Rahmawati', 
+    'Mewujudkan OSIS yang responsif, adaptif, dan berwawasan teknologi.', 
+    '1. Digitalisasi kegiatan sekolah.\n2. Optimalisasi ekstrakurikuler sains dan IT.', 
+    '#0d6efd', 0),
+(2, 'Gading Pratama', 'Zaskia Aurelia', 
+    'Membangun sinergi siswa yang berkarakter, berbudaya, dan berintegritas.', 
+    '1. Program peduli lingkungan sekolah.\n2. Mengadakan festival seni dan budaya tahunan.', 
+    '#198754', 0),
+(3, 'Reyhan Saputra', 'Clarissa Putri', 
+    'Mendorong inovasi kewirausahaan dan keolahragaan pelajar.', 
+    '1. Pelatihan enterpreneur mandiri.\n2. Peningkatan sarana turnamen olahraga antar-kelas.', 
+    '#ffc107', 0);
+
+====================================================================================================
+4. KONEKSI DATABASE (config/database.php)
+====================================================================================================
+<?php
+// Set zona waktu operasional server ke Waktu Indonesia Barat
+date_default_timezone_set('Asia/Jakarta');
+
+$db_host = 'localhost';
+$db_user = 'root';
+$db_pass = '';
+$db_name = 'db_evoting_pro';
+
+// Aktifkan pelaporan error MySQLi
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+
+try {
+    $koneksi = new mysqli($db_host, $db_user, $db_pass, $db_name);
+    $koneksi->set_charset("utf8mb4");
+} catch (mysqli_sql_exception $e) {
+    http_response_code(500);
+    die("Kesalahan Fatal Database: " . $e->getMessage());
+}
+?>
+
+====================================================================================================
+5. LAYER MODELS
+====================================================================================================
+
+--- A. models/AdminModel.php ---
+<?php
+class AdminModel {
+    private $db;
+
+    public function __construct($koneksi) {
+        $this->db = $koneksi;
+    }
+
+    public function verifikasiLogin($username, $password) {
+        $stmt = $this->db->prepare("SELECT id_admin, nama_petugas, username, password_hash FROM users_admin WHERE username = ?");
+        $stmt->bind_param("s", $username);
+        $stmt->execute();
+        $hasil = $stmt->get_result();
+
+        if ($hasil->num_rows === 1) {
+            $admin = $hasil->fetch_assoc();
+            // Verifikasi Password Hash Bcrypt
+            if (password_verify($password, $admin['password_hash'])) {
+                return $admin;
+            }
+        }
+        return false;
+    }
+}
+?>
+
+--- B. models/PemilihModel.php ---
+<?php
+class PemilihModel {
+    private $db;
+
+    public function __construct($koneksi) {
+        $this->db = $koneksi;
+    }
+
+    public function verifikasiPemilih($nisn, $token) {
+        $stmt = $this->db->prepare("SELECT id_pemilih, nisn, nama_siswa, kelas, status_vote FROM pemilih WHERE nisn = ? AND token_akses = ?");
+        $stmt->bind_param("ss", $nisn, $token);
+        $stmt->execute();
+        return $stmt->get_result()->fetch_assoc();
+    }
+
+    public function getPemilihById($id_pemilih) {
+        $stmt = $this->db->prepare("SELECT id_pemilih, nisn, nama_siswa, kelas, status_vote FROM pemilih WHERE id_pemilih = ?");
+        $stmt->bind_param("i", $id_pemilih);
+        $stmt->execute();
+        return $stmt->get_result()->fetch_assoc();
+    }
+}
+?>
+
+--- C. models/KandidatModel.php ---
+<?php
+class KandidatModel {
+    private $db;
+
+    public function __construct($koneksi) {
+        $this->db = $koneksi;
+    }
+
+    public function getSemuaKandidat() {
+        return $this->db->query("SELECT * FROM kandidat ORDER BY no_urut ASC");
+    }
+
+    public function getKandidatById($id) {
+        $stmt = $this->db->prepare("SELECT * FROM kandidat WHERE id_kandidat = ?");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        return $stmt->get_result()->fetch_assoc();
+    }
+
+    // TRANSAKSI DATABASE KETAT (ACID): Mencegah Suara Dobel & Data Corrupt
+    public function rekamPilihanSiswa($id_pemilih, $id_kandidat) {
+        // 1. Mulai Transaksi
+        $this->db->begin_transaction();
+
+        try {
+            // Validasi baris kunci: Pastikan siswa belum memilih
+            $stmtCek = $this->db->prepare("SELECT status_vote FROM pemilih WHERE id_pemilih = ? FOR UPDATE");
+            $stmtCek->bind_param("i", $id_pemilih);
+            $stmtCek->execute();
+            $hasil = $stmtCek->get_result()->fetch_assoc();
+
+            if (!$hasil || $hasil['status_vote'] === 'Sudah') {
+                $this->db->rollback();
+                return false; // Ditolak karena manipulasi / sudah memilih
+            }
+
+            // 2. Tambah 1 suara pada Paslon yang bersangkutan
+            $stmtSuara = $this->db->prepare("UPDATE kandidat SET total_suara = total_suara + 1 WHERE id_kandidat = ?");
+            $stmtSuara->bind_param("i", $id_kandidat);
+            $stmtSuara->execute();
+
+            // 3. Kunci status siswa menjadi 'Sudah' dan pasang stempel waktu
+            $waktu = date('Y-m-d H:i:s');
+            $stmtKunci = $this->db->prepare("UPDATE pemilih SET status_vote = 'Sudah', waktu_memilih = ? WHERE id_pemilih = ?");
+            $stmtKunci->bind_param("si", $waktu, $id_pemilih);
+            $stmtKunci->execute();
+
+            // 4. Komit seluruh transaksi ke storage
+            $this->db->commit();
+            return true;
+        } catch (Exception $e) {
+            $this->db->rollback();
+            return false;
+        }
+    }
+
+    // KALKULASI PERSENTASE REAL-TIME (Untuk konsumsi JSON Endpoint)
+    public function getRekapSuaraRealtime() {
+        // Ambil akumulasi suara masuk
+        $qTotal = $this->db->query("SELECT SUM(total_suara) as grand_total FROM kandidat");
+        $grand_total = (int)$qTotal->fetch_assoc()['grand_total'];
+
+        // Ambil status partisipasi pemilih
+        $qPartisipasi = $this->db->query("SELECT 
+            COUNT(*) as total_pemilih,
+            SUM(CASE WHEN status_vote = 'Sudah' THEN 1 ELSE 0 END) as sudah_memilih,
+            SUM(CASE WHEN status_vote = 'Belum' THEN 1 ELSE 0 END) as belum_memilih
+            FROM pemilih");
+        $partisipasi = $qPartisipasi->fetch_assoc();
+
+        $kandidatData = $this->db->query("SELECT id_kandidat, no_urut, CONCAT(nama_ketua, ' & ', nama_wakil) as paslon, total_suara, warna_tema FROM kandidat ORDER BY no_urut ASC");
+        
+        $listKandidat = [];
+        while ($row = $kandidatData->fetch_assoc()) {
+            $persen = ($grand_total > 0) ? round(($row['total_suara'] / $grand_total) * 100, 2) : 0;
+            $listKandidat[] = [
+                'id_kandidat' => (int)$row['id_kandidat'],
+                'no_urut' => (int)$row['no_urut'],
+                'paslon' => $row['paslon'],
+                'suara' => (int)$row['total_suara'],
+                'persentase' => $persen,
+                'warna' => $row['warna_tema']
+            ];
+        }
+
+        return [
+            'grand_total_suara' => $grand_total,
+            'partisipasi' => [
+                'total_dpt' => (int)$partisipasi['total_pemilih'],
+                'sudah_memilih' => (int)$partisipasi['sudah_memilih'],
+                'belum_memilih' => (int)$partisipasi['belum_memilih'],
+                'persentase_kehadiran' => ($partisipasi['total_pemilih'] > 0) ? round(($partisipasi['sudah_memilih'] / $partisipasi['total_pemilih']) * 100, 2) : 0
+            ],
+            'kandidat' => $listKandidat,
+            'timestamp' => date('H:i:s')
+        ];
+    }
+}
+?>
+
+====================================================================================================
+6. LAYER CONTROLLERS
+====================================================================================================
+
+--- A. controllers/AuthController.php ---
+<?php
+require_once 'models/AdminModel.php';
+require_once 'models/PemilihModel.php';
+
+class AuthController {
+    private $adminModel;
+    private $pemilihModel;
+
+    public function __construct($koneksi) {
+        $this->adminModel = new AdminModel($koneksi);
+        $this->pemilihModel = new PemilihModel($koneksi);
+        if (session_status() === PHP_SESSION_NONE) session_start();
+    }
+
+    public function login() {
+        // Redirection Guard jika sudah login
+        if (isset($_SESSION['role'])) {
+            if ($_SESSION['role'] === 'admin') { header("Location: index.php?page=dashboard_admin"); exit; }
+            if ($_SESSION['role'] === 'pemilih') { header("Location: index.php?page=bilik_suara"); exit; }
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $tipe_login = $_POST['tipe_login'] ?? '';
+
+            // 1. Cabang Login Panitia (Admin)
+            if ($tipe_login === 'admin') {
+                $username = trim($_POST['username'] ?? '');
+                $password = trim($_POST['password'] ?? '');
+                $admin = $this->adminModel->verifikasiLogin($username, $password);
+
+                if ($admin) {
+                    session_regenerate_id(true);
+                    $_SESSION['role'] = 'admin';
+                    $_SESSION['user_id'] = $admin['id_admin'];
+                    $_SESSION['nama'] = $admin['nama_petugas'];
+                    header("Location: index.php?page=dashboard_admin&pesan=login_sukses");
+                    exit;
+                } else {
+                    header("Location: index.php?pesan=auth_gagal"); exit;
+                }
+            }
+
+            // 2. Cabang Login Siswa (Pemilih)
+            if ($tipe_login === 'siswa') {
+                $nisn = trim($_POST['nisn'] ?? '');
+                $token = trim($_POST['token'] ?? '');
+                $pemilih = $this->pemilihModel->verifikasiPemilih($nisn, $token);
+
+                if ($pemilih) {
+                    if ($pemilih['status_vote'] === 'Sudah') {
+                        header("Location: index.php?pesan=sudah_memilih"); exit;
+                    }
+
+                    session_regenerate_id(true);
+                    $_SESSION['role'] = 'pemilih';
+                    $_SESSION['user_id'] = $pemilih['id_pemilih'];
+                    $_SESSION['nama'] = $pemilih['nama_siswa'];
+                    $_SESSION['kelas'] = $pemilih['kelas'];
+                    header("Location: index.php?page=bilik_suara");
+                    exit;
+                } else {
+                    header("Location: index.php?pesan=kredensial_siswa_salah"); exit;
+                }
+            }
+        }
+
+        require_once 'views/login.php';
+    }
+
+    public function logout() {
+        $_SESSION = [];
+        if (ini_get("session.use_cookies")) {
+            $params = session_get_cookie_params();
+            setcookie(session_name(), '', time() - 42000, $params["path"], $params["domain"], $params["secure"], $params["httponly"]);
+        }
+        session_destroy();
+        header("Location: index.php?pesan=logout_sukses");
+        exit;
+    }
+}
+?>
+
+--- B. controllers/BilikController.php ---
+<?php
+require_once 'models/KandidatModel.php';
+require_once 'models/PemilihModel.php';
+
+class BilikController {
+    private $kandidatModel;
+    private $pemilihModel;
+
+    public function __construct($koneksi) {
+        $this->kandidatModel = new KandidatModel($koneksi);
+        $this->pemilihModel = new PemilihModel($koneksi);
+        if (session_status() === PHP_SESSION_NONE) session_start();
+        $this->guardPemilih();
+    }
+
+    private function guardPemilih() {
+        if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'pemilih') {
+            header("Location: index.php?pesan=akses_ditolak");
+            exit;
+        }
+    }
+
+    public function index() {
+        $id_pemilih = $_SESSION['user_id'];
+        $data_siswa = $this->pemilihModel->getPemilihById($id_pemilih);
+
+        // Jika data di database sudah status 'Sudah', paksa logout
+        if ($data_siswa['status_vote'] === 'Sudah') {
+            session_destroy();
+            header("Location: index.php?pesan=sudah_memilih");
+            exit;
+        }
+
+        $daftar_kandidat = $this->kandidatModel->getSemuaKandidat();
+        require_once 'views/bilik_suara.php';
+    }
+
+    public function submitPilihan() {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $id_pemilih = (int)$_SESSION['user_id'];
+            $id_kandidat = (int)($_POST['id_kandidat'] ?? 0);
+
+            if ($id_kandidat <= 0) {
+                header("Location: index.php?page=bilik_suara&pesan=pilihan_tidak_valid");
+                exit;
+            }
+
+            // Eksekusi Transaksi Database
+            $sukses = $this->kandidatModel->rekamPilihanSiswa($id_pemilih, $id_kandidat);
+
+            if ($sukses) {
+                // Hancurkan Sesi Seketika (Zero Tolerance Re-Voting)
+                session_destroy();
+                header("Location: index.php?pesan=vote_berhasil");
+                exit;
+            } else {
+                session_destroy();
+                header("Location: index.php?pesan=transaksi_gagal");
+                exit;
+            }
+        }
+    }
+}
+?>
+
+--- C. controllers/DashboardController.php ---
+<?php
+require_once 'models/KandidatModel.php';
+
+class DashboardController {
+    private $kandidatModel;
+
+    public function __construct($koneksi) {
+        $this->kandidatModel = new KandidatModel($koneksi);
+        if (session_status() === PHP_SESSION_NONE) session_start();
+    }
+
+    private function guardAdmin() {
+        if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
+            header("Location: index.php?pesan=akses_terbatas");
+            exit;
+        }
+    }
+
+    // Tampilkan View Utama Dashboard
+    public function index() {
+        $this->guardAdmin();
+        $statistik_awal = $this->kandidatModel->getRekapSuaraRealtime();
+        require_once 'views/dashboard_admin.php';
+    }
+
+    // Endpoint REST API Khusus Background Asynchronous (JSON)
+    public function apiLiveCount() {
+        $this->guardAdmin();
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($this->kandidatModel->getRekapSuaraRealtime(), JSON_PRETTY_PRINT);
+        exit;
+    }
+}
+?>
+
+====================================================================
+7. LAYER VIEWS (UI/UX MODERN BOOTSTRAP 5 & SCRIPT ASYNC)
+====================================================================
+
+--- A. views/login.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E-Voting OSIS - Portal Autentikasi</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0b132b 0%, #1c2541 50%, #3a506b 100%);
+            min-height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .login-card {
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(16px);
+            border-radius: 24px;
+        }
+        .nav-pills .nav-link {
+            color: #cbd5e1;
+            font-weight: 600;
+            border-radius: 12px;
+            padding: 10px 24px;
+        }
+        .nav-pills .nav-link.active {
+            background-color: #3b82f6;
+            color: #ffffff;
+            box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
+        }
+    </style>
+</head>
+<body class="d-flex align-items-center justify-content-center py-5">
+
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-6 col-lg-5">
+                <div class="card login-card text-white shadow-2xl p-4 p-md-5">
+                    
+                    <div class="text-center mb-4">
+                        <div class="bg-primary bg-opacity-25 rounded-circle d-inline-flex p-3 mb-3 border border-primary border-opacity-50">
+                            <i class="fa-solid fa-check-to-slot fa-2x text-primary"></i>
+                        </div>
+                        <h3 class="fw-bold m-0 tracking-wide">E-VOTING OSIS</h3>
+                        <p class="text-white-50 small mt-1">Sistem Pemilihan Suara Berbasis Kedaulatan Digital</p>
+                    </div>
+
+                    <!-- PILIHAN TABS: SISWA ATAU ADMIN -->
+                    <ul class="nav nav-pills nav-fill mb-4 p-1 bg-dark bg-opacity-50 rounded-3" id="pills-tab" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="pills-siswa-tab" data-bs-toggle="pill" data-bs-target="#pills-siswa" type="button" role="tab">
+                                <i class="fa-solid fa-user-graduate me-1"></i> Siswa
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="pills-admin-tab" data-bs-toggle="pill" data-bs-target="#pills-admin" type="button" role="tab">
+                                <i class="fa-solid fa-shield-halved me-1"></i> Panitia
+                            </button>
+                        </li>
+                    </ul>
+
+                    <div class="tab-content" id="pills-tabContent">
+                        
+                        <!-- 1. FORM SISWA (PEMILIH) -->
+                        <div class="tab-pane fade show active" id="pills-siswa" role="tabpanel">
+                            <form action="index.php?page=login" method="POST">
+                                <input type="hidden" name="tipe_login" value="siswa">
+                                
+                                <div class="mb-3">
+                                    <label class="form-label small fw-semibold text-white-50">Nomor Induk Siswa Nasional (NISN)</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text bg-dark bg-opacity-50 border-0 text-white-50"><i class="fa-solid fa-id-card"></i></span>
+                                        <input type="text" name="nisn" class="form-control bg-dark bg-opacity-50 border-0 text-white" placeholder="Contoh: 1001" required autocomplete="off">
+                                    </div>
+                                </div>
+
+                                <div class="mb-4">
+                                    <label class="form-label small fw-semibold text-white-50">Token Akses Pemilih (6 Karakter)</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text bg-dark bg-opacity-50 border-0 text-white-50"><i class="fa-solid fa-key"></i></span>
+                                        <input type="text" name="token" class="form-control bg-dark bg-opacity-50 border-0 text-white" placeholder="Contoh: TK0192" required autocomplete="off">
+                                    </div>
+                                    <small class="text-white-50 mt-1 d-block" style="font-size: 11px;">*Token dibagikan resmi oleh panitia TPS sekolah.</small>
+                                </div>
+
+                                <button type="submit" class="btn btn-primary w-100 py-3 fw-bold rounded-3 shadow">
+                                    MASUK KE BILIK SUARA <i class="fa-solid fa-arrow-right-to-bracket ms-2"></i>
+                                </button>
+                            </form>
+                        </div>
+
+                        <!-- 2. FORM PANITIA (ADMIN) -->
+                        <div class="tab-pane fade" id="pills-admin" role="tabpanel">
+                            <form action="index.php?page=login" method="POST">
+                                <input type="hidden" name="tipe_login" value="admin">
+
+                                <div class="mb-3">
+                                    <label class="form-label small fw-semibold text-white-50">Username Panitia</label>
+                                    <input type="text" name="username" class="form-control bg-dark bg-opacity-50 border-0 text-white" placeholder="admin" required>
+                                </div>
+
+                                <div class="mb-4">
+                                    <label class="form-label small fw-semibold text-white-50">Password</label>
+                                    <input type="password" name="password" class="form-control bg-dark bg-opacity-50 border-0 text-white" placeholder="••••••••" required>
+                                </div>
+
+                                <button type="submit" class="btn btn-outline-light w-100 py-3 fw-bold rounded-3">
+                                    VERIFIKASI PANITIA <i class="fa-solid fa-lock ms-2"></i>
+                                </button>
+                            </form>
+                        </div>
+
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const p = urlParams.get('pesan');
+        if(p === 'sudah_memilih') Swal.fire('Hak Suara Hangus!', 'Data pemilih dengan kredensial tersebut sudah tercatat menggunakan hak suaranya!', 'warning');
+        if(p === 'auth_gagal') Swal.fire('Autentikasi Ditolak!', 'Username atau password panitia salah.', 'error');
+        if(p === 'kredensial_siswa_salah') Swal.fire('Gagal!', 'Kombinasi NISN dan Token tidak ditemukan di database DPT.', 'error');
+        if(p === 'vote_berhasil') Swal.fire('Kedaulatan Disampaikan!', 'Pilihan Anda telah terenkripsi dan tersimpan ke kotak suara digital. Terima kasih atas partisipasi Anda.', 'success');
+        if(p === 'logout_sukses') Swal.fire('Selesai', 'Sesi Anda telah aman ditutup.', 'info');
+        if(p === 'akses_ditolak') Swal.fire('Peringatan Keamanan', 'Silakan otentikasi identitas Anda terlebih dahulu.', 'warning');
+    </script>
+</body>
+</html>
+
+--- B. views/bilik_suara.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bilik Suara Digital - E-Voting</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        body { background-color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card-paslon {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 2px solid transparent;
+        }
+        .card-paslon:hover {
+            transform: translateY(-8px);
+            border-color: #3b82f6;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+        }
+        .badge-nourut {
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: 800;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- NAVBAR IDENTITAS PEMILIH -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top shadow-sm py-3">
+        <div class="container">
+            <span class="navbar-brand fw-bold">
+                <i class="fa-solid fa-person-booth text-primary me-2"></i> BILIK PENCABUTAN SUARA
+            </span>
+            <div class="d-flex align-items-center text-white">
+                <div class="text-end me-3">
+                    <div class="fw-bold"><?php echo htmlspecialchars($_SESSION['nama']); ?></div>
+                    <small class="text-white-50">NISN: <?php echo htmlspecialchars($_SESSION['user_id']); ?> | <?php echo htmlspecialchars($_SESSION['kelas']); ?></small>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container py-5">
+        <div class="text-center mb-5">
+            <h2 class="fw-bold text-dark mb-2">SURAT SUARA ELEKTRONIK KETUA & WAKIL OSIS</h2>
+            <p class="text-muted">Pelajari visi dan misi setiap pasangan calon, lalu tekan tombol "PILIH PASLON" untuk mengesahkan suara Anda.</p>
+        </div>
+
+        <div class="row g-4 justify-content-center">
+            <?php while($k = $daftar_kandidat->fetch_assoc()): ?>
+            <div class="col-lg-4 col-md-6">
+                <div class="card card-paslon h-100 rounded-4 shadow-sm bg-white overflow-hidden">
+                    <div class="card-header bg-white p-4 border-0 d-flex justify-content-between align-items-center">
+                        <div class="badge-nourut rounded-circle bg-dark text-white">
+                            <?php echo $k['no_urut']; ?>
+                        </div>
+                        <span class="badge bg-primary bg-opacity-10 text-primary px-3 py-2 rounded-pill fw-bold">Kandidat Resmi</span>
+                    </div>
+
+                    <div class="card-body p-4 pt-0">
+                        <h4 class="fw-bold text-dark mb-1"><?php echo htmlspecialchars($k['nama_ketua']); ?></h4>
+                        <h6 class="text-muted mb-4">& <?php echo htmlspecialchars($k['nama_wakil']); ?></h6>
+
+                        <div class="mb-3">
+                            <label class="fw-bold small text-uppercase text-secondary tracking-wider">Visi Calon:</label>
+                            <p class="small text-dark fst-italic bg-light p-3 rounded-3 mt-1 mb-0 border">
+                                "<?php echo nl2br(htmlspecialchars($k['visi'])); ?>"
+                            </p>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="fw-bold small text-uppercase text-secondary tracking-wider">Misi Calon:</label>
+                            <div class="small text-muted mt-1 ps-2">
+                                <?php echo nl2br(htmlspecialchars($k['misi'])); ?>
+                            </div>
+                        </div>
+
+                        <!-- Form Pencoblosan Individual -->
+                        <form action="index.php?page=submit_vote" method="POST" id="form-vote-<?php echo $k['id_kandidat']; ?>">
+                            <input type="hidden" name="id_kandidat" value="<?php echo $k['id_kandidat']; ?>">
+                            <button type="button" 
+                                    class="btn btn-primary w-100 py-3 fw-bold rounded-pill shadow-sm"
+                                    onclick="konfirmasiEksekusi(<?php echo $k['id_kandidat']; ?>, '<?php echo htmlspecialchars($k['nama_ketua'].' & '.$k['nama_wakil']); ?>', <?php echo $k['no_urut']; ?>)">
+                                <i class="fa-solid fa-stamp me-2"></i> COBLOS PASLON 0<?php echo $k['no_urut']; ?>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <?php endwhile; ?>
+        </div>
+    </div>
+
+    <script>
+        function konfirmasiEksekusi(idKandidat, namaPaslon, noUrut) {
+            Swal.fire({
+                title: 'Konfirmasi Pilihan Anda',
+                html: `Apakah Anda sepenuhnya yakin memilih pasangan nomor urut <b>0${noUrut} (${namaPaslon})</b>?<br><br><span class="text-danger small">Peringatan: Pilihan ini bersifat final dan tidak dapat direvisi/dibatalkan!</span>`,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#3b82f6',
+                cancelButtonColor: '#64748b',
+                confirmButtonText: 'Ya, Sahkan Suara Saya!',
+                cancelButtonText: 'Periksa Kembali'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    // Tampilkan State Loading untuk mencegah submit ganda di frontend
+                    Swal.fire({
+                        title: 'Mengeksekusi Kotak Suara...',
+                        text: 'Mengunci hak pilih dan memperbarui basis data.',
+                        allowOutsideClick: false,
+                        didOpen: () => { Swal.showLoading(); }
+                    });
+                    document.getElementById('form-vote-' + idKandidat).submit();
+                }
+            });
+        }
+    </script>
+</body>
+</html>
+
+--- C. views/dashboard_admin.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Quick Count - Dashboard Panitia</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(12px);
+            border-radius: 20px;
+        }
+        .progress { height: 28px; background-color: #334155; border-radius: 14px; overflow: hidden; }
+        .live-indicator { width: 12px; height: 12px; border-radius: 50%; display: inline-block; animation: blink 1.2s infinite; }
+        @keyframes blink { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
+    </style>
+</head>
+<body class="py-4">
+
+    <!-- NAVBAR ADMIN -->
+    <div class="container mb-5">
+        <div class="d-flex justify-content-between align-items-center border-bottom border-secondary border-opacity-50 pb-3">
+            <div>
+                <h3 class="fw-bold m-0 text-white">
+                    <span class="live-indicator bg-danger me-2"></span> REAL-TIME QUICK COUNT ENGINE
+                </h3>
+                <small class="text-white-50">Monitoring Keterisian Kotak Suara Berbasis Interval AJAX</small>
+            </div>
+            <div>
+                <span class="text-white-50 me-3 small">Petugas: <strong class="text-white"><?php echo htmlspecialchars($_SESSION['nama']); ?></strong></span>
+                <a href="index.php?page=logout" class="btn btn-outline-danger btn-sm rounded-pill px-4 fw-semibold">
+                    <i class="fa-solid fa-power-off me-1"></i> Keluar
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- BARIS KARTU STATISTIK DPT & PARTISIPASI -->
+        <div class="row g-4 mb-5">
+            <div class="col-md-3">
+                <div class="card glass-panel text-white p-4">
+                    <span class="text-white-50 small text-uppercase fw-bold">Total DPT Siswa</span>
+                    <h2 class="display-6 fw-bold my-2 text-info" id="stat-total-dpt">
+                        <?php echo $statistik_awal['partisipasi']['total_dpt']; ?>
+                    </h2>
+                    <small class="text-white-50">Siswa berhak memilih</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card glass-panel text-white p-4">
+                    <span class="text-white-50 small text-uppercase fw-bold">Suara Masuk</span>
+                    <h2 class="display-6 fw-bold my-2 text-success" id="stat-sudah-memilih">
+                        <?php echo $statistik_awal['partisipasi']['sudah_memilih']; ?>
+                    </h2>
+                    <small class="text-white-50">Telah diverifikasi sistem</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card glass-panel text-white p-4">
+                    <span class="text-white-50 small text-uppercase fw-bold">Belum Memilih</span>
+                    <h2 class="display-6 fw-bold my-2 text-warning" id="stat-belum-memilih">
+                        <?php echo $statistik_awal['partisipasi']['belum_memilih']; ?>
+                    </h2>
+                    <small class="text-white-50">Menunggu antrean TPS</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card glass-panel text-white p-4">
+                    <span class="text-white-50 small text-uppercase fw-bold">Partisipasi (Kehadiran)</span>
+                    <h2 class="display-6 fw-bold my-2 text-primary" id="stat-persen-kehadiran">
+                        <?php echo $statistik_awal['partisipasi']['persentase_kehadiran']; ?>%
+                    </h2>
+                    <small class="text-white-50">Tingkat partisipasi aktif</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- AREA GRAFIK BATANG PROGRESS SUARA KANDIDAT -->
+        <div class="row justify-content-center">
+            <div class="col-lg-10">
+                <div class="card glass-panel p-5">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h4 class="fw-bold m-0"><i class="fa-solid fa-chart-column me-2 text-primary"></i> Perolehan Suara Pasangan Calon</h4>
+                        <span class="badge bg-secondary bg-opacity-50 text-white-50 px-3 py-2 rounded-pill font-monospace" id="stat-timestamp">
+                            Sinkronisasi Terakhir: <?php echo $statistik_awal['timestamp']; ?>
+                        </span>
+                    </div>
+
+                    <div id="dynamic-progress-container">
+                        <!-- Iterasi Awal via PHP SSR, selanjutnya di-refresh dinamis oleh JavaScript -->
+                        <?php foreach($statistik_awal['kandidat'] as$paslon): ?>
+                        <div class="mb-4" id="paslon-block-<?php echo $paslon['id_kandidat']; ?>">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <span class="fw-bold fs-5">
+                                    <span class="badge bg-dark me-2">0<?php echo $paslon['no_urut']; ?></span>
+                                    <?php echo htmlspecialchars($paslon['paslon']); ?>
+                                </span>
+                                <span class="fw-bold fs-5 font-monospace text-info" id="label-persen-<?php echo $paslon['id_kandidat']; ?>">
+                                    <?php echo $paslon['persentase']; ?>\% (<?php echo$paslon['suara']; ?> Suara)
+                                </span>
+                            </div>
+                            <div class="progress">
+                                <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                     id="bar-<?php echo $paslon['id_kandidat']; ?>"
+                                     role="progressbar" 
+                                     style="width: <?php echo $paslon['persentase']; ?>\%; background-color: <?php echo$paslon['warna']; ?>; transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);">
+                                </div>
+                            </div>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ENGINE AJAX BACKGROUND FETCH (REAL-TIME ENGINE) -->
+    <script>
+        function requestStatistikTerbaru() {
+            fetch('index.php?page=api_live_count')
+                .then(response => {
+                    if (!response.ok) throw new Error('Network error saat polling data.');
+                    return response.json();
+                })
+                .then(data => {
+                    // 1. Update Data Kartu Statistik Partisipasi
+                    document.getElementById('stat-total-dpt').innerText = data.partisipasi.total_dpt;
+                    document.getElementById('stat-sudah-memilih').innerText = data.partisipasi.sudah_memilih;
+                    document.getElementById('stat-belum-memilih').innerText = data.partisipasi.belum_memilih;
+                    document.getElementById('stat-persen-kehadiran').innerText = data.partisipasi.persentase_kehadiran + '%';
+                    document.getElementById('stat-timestamp').innerText = 'Sinkronisasi Terakhir: ' + data.timestamp;
+
+                    // 2. Update Persentase & Lebar Progress Bar Masing-masing Paslon
+                    data.kandidat.forEach(k => {
+                        const labelText = document.getElementById('label-persen-' + k.id_kandidat);
+                        const progressBar = document.getElementById('bar-' + k.id_kandidat);
+
+                        if (labelText && progressBar) {
+                            labelText.innerText = `${k.persentase}% (${k.suara} Suara)`;
+                            progressBar.style.width = k.persentase + '%';
+                        }
+                    });
+                })
+                .catch(err => {
+                    console.warn('Gagal menarik data sinkronisasi live: ', err);
+                });
+        }
+
+        // Jalankan polling setiap 2500 milidetik (2.5 detik)
+        setInterval(requestStatistikTerbaru, 2500);
+    </script>
+</body>
+</html>
+
+====================================================================
+8. CENTRAL ROUTER (index.php) - FRONT CONTROLLER
+====================================================================
+<?php
+// Nyalakan Sesi
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// Muat Resource Inti
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+require_once 'controllers/BilikController.php';
+require_once 'controllers/DashboardController.php';
+
+// Inisialisasi Objek Controller
+$auth = new AuthController($koneksi);
+$bilik = new BilikController($koneksi);
+$dashboard = new DashboardController($koneksi);
+
+// Parse Parameter URL
+$page =$_GET['page'] ?? '';
+
+switch ($page) {
+    // --- AUTENTIKASI ---
+    case 'login':
+        $auth->login();
+        break;
+        
+    case 'logout':
+        $auth->logout();
+        break;
+
+    // --- AREA PEMILIH (SISWA) ---
+    case 'bilik_suara':
+        $bilik->index();
+        break;
+
+    case 'submit_vote':
+        $bilik->submitPilihan();
+        break;
+
+    // --- AREA PANITIA (ADMIN) ---
+    case 'dashboard_admin':
+        $dashboard->index();
+        break;
+
+    // --- ENDPOINT ASYNC JSON (API) ---
+    case 'api_live_count':
+        $dashboard->apiLiveCount();
+        break;
+
+    // --- DEFAULT ROOT ---
+    default:
+        $auth->login();
+        break;
+}
+?>
+====================================================================

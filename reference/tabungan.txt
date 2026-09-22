@@ -1,0 +1,468 @@
+====================================================================
+MASTER BLUEPRINT: SISTEM TABUNGAN SISWA (MYSQL TRIGGER & SALDO LOGIC)
+====================================================================
+[KONSEP AKUNTANSI SISTEM]
+Di aplikasi keuangan nyata, data transaksi tidak boleh "Diedit" atau "Dihapus" sembarangan agar riwayat uang tidak kacau. Oleh karena itu, kita hanya membuat fitur READ (Tampil Riwayat) dan CREATE (Setor/Tarik).
+
+[STRUKTUR FOLDER]
+app_tabungan/
+├── config/database.php
+├── controllers/
+│   ├── AuthController.php
+│   └── TabunganController.php
+├── models/
+│   ├── UserModel.php
+│   └── TabunganModel.php
+├── views/
+│   ├── login.php
+│   ├── dashboard.php
+│   ├── transaksi_tampil.php
+│   └── transaksi_tambah.php
+└── index.php
+
+
+====================================================================
+LANGKAH 1: DATABASE & MAGIC TRIGGER (phpMyAdmin)
+====================================================================
+Buat database bernama `db_tabungan_sekolah`.
+
+-- 1. Tabel Users (Untuk Admin/Teller)
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    nama_lengkap VARCHAR(100) NOT NULL,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL
+);
+INSERT INTO users (nama_lengkap, username, password) VALUES ('Teller Utama', 'admin', '12345');
+
+-- 2. Tabel Master Siswa (Menyimpan Saldo Akhir)
+CREATE TABLE siswa (
+    id_siswa INT AUTO_INCREMENT PRIMARY KEY,
+    nis VARCHAR(20) NOT NULL,
+    nama_siswa VARCHAR(100) NOT NULL,
+    kelas VARCHAR(50) NOT NULL,
+    saldo_akhir INT(11) DEFAULT 0
+);
+-- Masukin Dummy Siswa
+INSERT INTO siswa (nis, nama_siswa, kelas, saldo_akhir) VALUES 
+('101', 'Rixsan Joulfiand', 'X RPL 1', 0),
+('102', 'Budi Santoso', 'X RPL 2', 0);
+
+-- 3. Tabel Riwayat Transaksi
+CREATE TABLE transaksi (
+    id_transaksi INT AUTO_INCREMENT PRIMARY KEY,
+    id_siswa INT NOT NULL,
+    tgl_transaksi DATETIME NOT NULL,
+    jenis ENUM('Setor', 'Tarik') NOT NULL,
+    nominal INT(11) NOT NULL,
+    keterangan TEXT NOT NULL
+);
+
+--------------------------------------------------------------------
+-- KODE SAKTI: MYSQL TRIGGER (Jalankan kode ini di tab SQL phpMyAdmin)
+-- Fungsi: Otomatis nambah/ngurangin saldo_akhir saat ada transaksi masuk!
+--------------------------------------------------------------------
+DELIMITER $$ CREATE TRIGGER otomatis_update_saldo  AFTER INSERT ON transaksi FOR EACH ROW  BEGIN     IF NEW.jenis = 'Setor' THEN         UPDATE siswa SET saldo_akhir = saldo_akhir + NEW.nominal WHERE id_siswa = NEW.id_siswa;     ELSEIF NEW.jenis = 'Tarik' THEN         UPDATE siswa SET saldo_akhir = saldo_akhir - NEW.nominal WHERE id_siswa = NEW.id_siswa;     END IF; END$$
+DELIMITER ;
+--------------------------------------------------------------------
+
+
+====================================================================
+LANGKAH 2: MODELS (Logika PHP & Validasi)
+====================================================================
+
+--- A. config/database.php ---
+<?php
+$koneksi = new mysqli("localhost", "root", "", "db_tabungan_sekolah");
+if ($koneksi->connect_error) die("Koneksi Error: " . $koneksi->connect_error);
+date_default_timezone_set('Asia/Jakarta');
+?>
+
+--- B. models/UserModel.php (Sama seperti materi sebelumnya) ---
+<?php
+class UserModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+    public function login($username, $password) {$username = mysqli_real_escape_string($this->db,$username);
+        $hasil =$this->db->query("SELECT * FROM users WHERE username = '$username' AND password = '$password'");
+        return $hasil->fetch_assoc();
+    }
+}
+?>
+
+--- C. models/TabunganModel.php ---
+<?php
+class TabunganModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    // Ambil daftar siswa untuk Dropdown di form
+    public function getSemuaSiswa() {
+        return $this->db->query("SELECT * FROM siswa ORDER BY nama_siswa ASC");
+    }
+
+    // Ambil saldo spesifik siswa (Buat validasi Tarik Tunai)
+    public function getSaldoSiswa($id_siswa) {
+        $id = (int)$id_siswa;
+        $hasil =$this->db->query("SELECT saldo_akhir FROM siswa WHERE id_siswa = $id");
+        $data =$hasil->fetch_assoc();
+        return $data['saldo_akhir'];
+    }
+
+    // Ambil riwayat transaksi lengkap pakai INNER JOIN
+    public function getRiwayatTransaksi() {
+        $query = "SELECT t.*, s.nama_siswa, s.kelas, s.saldo_akhir 
+                  FROM transaksi t 
+                  JOIN siswa s ON t.id_siswa = s.id_siswa 
+                  ORDER BY t.tgl_transaksi DESC";
+        return $this->db->query($query);
+    }
+
+    // Hitung Total Uang di Bank (Untuk Dashboard)
+    public function getTotalUangBank() {
+        $hasil =$this->db->query("SELECT SUM(saldo_akhir) as total FROM siswa");
+        return $hasil->fetch_assoc()['total'];
+    }
+
+    // Fungsi Insert Transaksi (Otomatis memicu Trigger di Database)
+    public function tambahTransaksi($id_siswa,$jenis, $nominal,$ket) {
+        $id_siswa = (int)$id_siswa;
+        $nominal = (int)$nominal;
+        $tgl = date('Y-m-d H:i:s'); // Rekam jam persis saat eksekusi$ket = mysqli_real_escape_string($this->db,$ket);
+        
+        return $this->db->query("INSERT INTO transaksi (id_siswa, tgl_transaksi, jenis, nominal, keterangan) 
+                                 VALUES ($id_siswa, '$tgl', '$jenis', $nominal, '$ket')");
+    }
+}
+?>
+
+
+====================================================================
+LANGKAH 3: CONTROLLER (Sang Satpam Logika)
+====================================================================
+
+--- A. controllers/AuthController.php ---
+<?php
+require_once 'models/UserModel.php';
+class AuthController {
+    private $model;
+    public function __construct($koneksi) { 
+        $this->model = new UserModel($koneksi); 
+        if(session_status() === PHP_SESSION_NONE) session_start();
+    }
+    public function login() {
+        if(isset($_SESSION['id_user'])) { header("Location: index.php?page=dashboard"); exit; }
+        if($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $user =$this->model->login($_POST['username'],$_POST['password']);
+            if($user) {
+                $_SESSION['id_user'] =$user['id_user'];
+                $_SESSION['nama_lengkap'] =$user['nama_lengkap'];
+                header("Location: index.php?page=dashboard&alert=welcome"); exit;
+            }
+            header("Location: index.php?alert=gagal"); exit;
+        }
+        require_once 'views/login.php';
+    }
+    public function logout() { session_destroy(); header("Location: index.php"); exit; }
+}
+?>
+
+--- B. controllers/TabunganController.php ---
+<?php
+require_once 'models/TabunganModel.php';
+class TabunganController {
+    private $model;
+    public function __construct($koneksi) { $this->model = new TabunganModel($koneksi); }
+
+    public function dashboard() {
+        $total_uang =$this->model->getTotalUangBank();
+        require_once 'views/dashboard.php';
+    }
+
+    public function riwayat() {
+        $data_transaksi =$this->model->getRiwayatTransaksi();
+        require_once 'views/transaksi_tampil.php';
+    }
+
+    public function setor_tarik() {
+        $data_siswa =$this->model->getSemuaSiswa();
+
+        if($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $id_siswa =$_POST['id_siswa'];
+            $jenis =$_POST['jenis'];
+            $nominal =$_POST['nominal'];
+            $keterangan =$_POST['keterangan'];
+
+            // LOGIKA PENTING: Jika Tarik Tunai, cek dulu saldo cukup apa nggak!
+            if($jenis == 'Tarik') {$saldo_saat_ini = $this->model->getSaldoSiswa($id_siswa);
+                if($nominal >$saldo_saat_ini) {
+                    header("Location: index.php?page=tambah_transaksi&pesan=saldo_kurang"); 
+                    exit;
+                }
+            }
+
+            // Jika saldo cukup (atau jika jenisnya Setor), eksekusi simpan!
+            $this->model->tambahTransaksi($id_siswa,$jenis, $nominal,$keterangan);
+            header("Location: index.php?page=riwayat&pesan=sukses_transaksi");
+            exit;
+        }
+        require_once 'views/transaksi_tambah.php';
+    }
+}
+?>
+
+
+====================================================================
+LANGKAH 4: VIEWS (Desain Keuangan Premium & Format Rupiah)
+====================================================================
+
+--- A. views/dashboard.php ---
+<?php 
+if(session_status() === PHP_SESSION_NONE) session_start();
+if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Bank Sekolah</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light">
+    
+    <nav class="navbar navbar-expand-lg navbar-dark bg-success shadow-sm py-3 mb-4">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#"><i class="fa-solid fa-piggy-bank me-2"></i>E-Tabungan</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link active fw-bold" href="index.php?page=dashboard">Dashboard</a></li>
+                    <li class="nav-item"><a class="nav-link" href="index.php?page=riwayat">Riwayat Transaksi</a></li>
+                </ul>
+                <span class="text-white me-3 fw-semibold">Teller: <?php echo $_SESSION['nama_lengkap']; ?></span>
+                <a href="index.php?page=logout" class="btn btn-light text-success btn-sm rounded-pill px-3 fw-bold shadow-sm">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <!-- WIDGET TOTAL KAS BANK -->
+            <div class="col-md-8">
+                <div class="card bg-dark text-white border-0 shadow-lg rounded-4 overflow-hidden mb-4">
+                    <div class="bg-success" style="height: 6px;"></div>
+                    <div class="card-body p-5 text-center">
+                        <h5 class="text-uppercase text-muted fw-bold mb-3">Total Dana Tabungan Siswa</h5>
+                        <h1 class="display-3 fw-bold text-success mb-0">
+                            Rp <?php echo number_format($total_uang, 0, ',', '.'); ?>
+                        </h1>
+                        <p class="text-secondary mt-3">Akumulasi total dari seluruh saldo siswa yang tercatat.</p>
+                        
+                        <div class="mt-4">
+                            <a href="index.php?page=tambah_transaksi" class="btn btn-success btn-lg rounded-pill fw-bold shadow px-5 mx-2">
+                                <i class="fa-solid fa-money-bill-wave me-2"></i> Setor / Tarik
+                            </a>
+                            <a href="index.php?page=riwayat" class="btn btn-outline-light btn-lg rounded-pill fw-bold shadow px-5 mx-2">
+                                Riwayat
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
+--- B. views/transaksi_tampil.php ---
+<?php 
+if(session_status() === PHP_SESSION_NONE) session_start();
+if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Riwayat Transaksi</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light">
+    
+    <nav class="navbar navbar-expand-lg navbar-dark bg-success shadow-sm py-3 mb-4">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#"><i class="fa-solid fa-piggy-bank me-2"></i>E-Tabungan</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link" href="index.php?page=dashboard">Dashboard</a></li>
+                    <li class="nav-item"><a class="nav-link active fw-bold" href="index.php?page=riwayat">Riwayat Transaksi</a></li>
+                </ul>
+                <a href="index.php?page=logout" class="btn btn-light text-success btn-sm rounded-pill px-3 fw-bold shadow-sm">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <?php if(isset($_GET['pesan']) &&$_GET['pesan']=='sukses_transaksi'): ?>
+            <script>Swal.fire('Sukses!', 'Transaksi berhasil diproses, Saldo otomatis berubah!', 'success');</script>
+        <?php endif; ?>
+
+        <div class="card border-0 shadow-sm rounded-4">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center py-4 border-0 rounded-top-4">
+                <h4 class="fw-bold m-0 text-dark">Log Transaksi Siswa</h4>
+                <a href="index.php?page=tambah_transaksi" class="btn btn-success fw-bold rounded-pill shadow-sm px-4">
+                    + Transaksi Baru
+                </a>
+            </div>
+            
+            <div class="card-body p-4 pt-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle border">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Waktu & Tgl</th>
+                                <th>Nama Siswa (Kelas)</th>
+                                <th>Jenis</th>
+                                <th>Nominal</th>
+                                <th>Sisa Saldo Akhir</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php while($row =$data_transaksi->fetch_assoc()): ?>
+                            <tr>
+                                <td>
+                                    <span class="fw-bold text-dark"><?php echo date('d M Y', strtotime($row['tgl_transaksi'])); ?></span><br>
+                                    <small class="text-muted"><?php echo date('H:i:s', strtotime($row['tgl_transaksi'])); ?> WIB</small>
+                                </td>
+                                <td>
+                                    <span class="fw-bold text-primary"><?php echo $row['nama_siswa']; ?></span><br>
+                                    <small class="text-muted"><?php echo $row['kelas']; ?> - <?php echo$row['keterangan']; ?></small>
+                                </td>
+                                <td>
+                                    <?php 
+                                        if($row['jenis'] == 'Setor') echo '<span class="badge bg-success rounded-pill px-3 py-2"><i class="fa-solid fa-arrow-down me-1"></i> Setor</span>';
+                                        else echo '<span class="badge bg-danger rounded-pill px-3 py-2"><i class="fa-solid fa-arrow-up me-1"></i> Tarik</span>';
+                                    ?>
+                                </td>
+                                <td class="fw-bold fs-5 <?php echo ($row['jenis'] == 'Setor') ? 'text-success' : 'text-danger'; ?>">
+                                    Rp <?php echo number_format($row['nominal'], 0, ',', '.'); ?>
+                                </td>
+                                <td>
+                                    <!-- Saldo ini terupdate otomatis berkat MySQL Trigger -->
+                                    <span class="badge bg-dark rounded-pill px-3 py-2 fs-6">
+                                        Rp <?php echo number_format($row['saldo_akhir'], 0, ',', '.'); ?>
+                                    </span>
+                                </td>
+                            </tr>
+                            <?php endwhile; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
+--- C. views/transaksi_tambah.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Input Transaksi</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-light py-5">
+    <div class="container">
+        
+        <!-- ALERT JIKA SALDO KURANG SAAT TARIK TUNAI -->
+        <?php if(isset($_GET['pesan']) &&$_GET['pesan']=='saldo_kurang'): ?>
+            <script>Swal.fire('Gagal Cuy!', 'Saldo siswa tidak mencukupi untuk melakukan penarikan ini.', 'error');</script>
+        <?php endif; ?>
+
+        <div class="card border-0 shadow-lg mx-auto rounded-4 p-5" style="max-width: 600px;">
+            <h3 class="fw-bold mb-4 text-success text-center">Setor / Tarik Tabungan</h3>
+            <form action="index.php?page=tambah_transaksi" method="POST">
+                
+                <div class="mb-3">
+                    <label class="form-label fw-bold small text-muted">Pilih Siswa</label>
+                    <select name="id_siswa" class="form-select form-select-lg bg-light border-0 fw-bold" required>
+                        <option value="" disabled selected>Pilih Siswa...</option>
+                        <!-- Looping data siswa dari database -->
+                        <?php while($s =$data_siswa->fetch_assoc()): ?>
+                            <option value="<?php echo $s['id_siswa']; ?>">
+                                <?php echo $s['nama_siswa']; ?> (<?php echo $s['kelas']; ?>) - Saldo: Rp <?php echo number_format($s['saldo_akhir'],0,',','.'); ?>
+                            </option>
+                        <?php endwhile; ?>
+                    </select>
+                </div>
+
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label fw-bold small text-muted">Jenis Transaksi</label>
+                        <select name="jenis" class="form-select form-select-lg bg-light border-0 fw-bold" required>
+                            <option value="Setor" class="text-success">Menabung (Setor)</option>
+                            <option value="Tarik" class="text-danger">Ambil Uang (Tarik)</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6 mb-4">
+                        <label class="form-label fw-bold small text-muted">Nominal (Rp)</label>
+                        <input type="number" name="nominal" class="form-control form-control-lg border-success shadow-sm fw-bold" placeholder="Contoh: 50000" required>
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <label class="form-label fw-bold small text-muted">Keterangan / Berita</label>
+                    <input type="text" name="keterangan" class="form-control bg-light border-0" placeholder="Contoh: Tabungan Wajib / Tarik buat Beli Buku" required>
+                </div>
+
+                <button type="submit" class="btn btn-success btn-lg w-100 fw-bold rounded-pill shadow">PROSES TRANSAKSI</button>
+                <div class="text-center mt-3"><a href="index.php?page=riwayat" class="text-decoration-none text-muted fw-bold">Batal</a></div>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+
+
+====================================================================
+LANGKAH 5: ROUTER PUSAT (index.php)
+====================================================================
+<?php
+session_start();
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+require_once 'controllers/TabunganController.php';
+
+$auth = new AuthController($koneksi);$tabungan = new TabunganController($koneksi);$page = isset($_GET['page']) ?$_GET['page'] : '';
+
+switch ($page) {
+    case 'logout': $auth->logout(); break;
+
+    case 'dashboard':
+        if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $tabungan->dashboard(); break;
+
+    case 'riwayat':
+        if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $tabungan->riwayat(); break;
+
+    case 'tambah_transaksi':
+        if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $tabungan->setor_tarik(); break;
+
+    default:
+        // Cek login. Kalau file view login.php lu nggak pakai file sendiri, kopas kodenya dari materi booking ya!
+        if(isset($_SESSION['id_user'])) { header("Location: index.php?page=dashboard"); exit; }
+        $auth->login(); break;
+}
+?>
+====================================================================
+Penjelasan Kunci (Kenapa Sistem Ini Mahal Harganya):
+Trigger MySQL: Saat lu nge-klik tombol "ProSES TRANSAKSI", controller cuma nyuruh database nyimpan data transaksi. Ajaibnya, di detik yang sama, MySQL langsung sadar "Eh ada transaksi nih!" trus dia baca DELIMITER yang udah lu pasang. Kalau jenisnya 'Setor', kolom saldo_akhir milik siswa yang bersangkutan langsung ditambah nominal. Sistem PHP lu jadi enteng banget kerjanya!
+
+Validasi Tarik Tunai: Di TabunganController->setor_tarik(), ada logika pengecekan maut:
+if($nominal > $saldo_saat_ini) { tolak! }
+Ini mencegah yang namanya "Saldo Minus".
+
+Format Rupiah Dinamis: Tabel dan Dropdown di View lu udah otomatis dikasih format titik ribuan khas Indonesia pakai fungsi number_format(), bikin tampilannya kerasa kayak ATM beneran.
