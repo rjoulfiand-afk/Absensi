@@ -1,0 +1,284 @@
+====================================================================
+MATERI GABUT: KALKULATOR MVC + CRUD RIWAYAT
+====================================================================
+
+[STRUKTUR FOLDER]
+app_kalkulator/
+├── config/database.php
+├── controllers/KalkulatorController.php
+├── models/KalkulatorModel.php
+├── views/kalkulator_view.php
+└── index.php
+
+
+====================================================================
+LANGKAH 1: DATABASE (phpMyAdmin)
+====================================================================
+Bikin database: `db_kalkulator`
+
+CREATE TABLE riwayat_hitung (
+    id_riwayat INT AUTO_INCREMENT PRIMARY KEY,
+    angka_1 DECIMAL(15,2) NOT NULL,
+    operator VARCHAR(5) NOT NULL,
+    angka_2 DECIMAL(15,2) NOT NULL,
+    hasil DECIMAL(15,2) NOT NULL,
+    catatan VARCHAR(150) DEFAULT 'Tanpa Catatan',
+    waktu TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+====================================================================
+LANGKAH 2: KONEKSI & MODEL (models/KalkulatorModel.php)
+====================================================================
+
+--- config/database.php ---
+<?php
+$koneksi = new mysqli("localhost", "root", "", "db_kalkulator");
+if ($koneksi->connect_error) die("Koneksi Error: " . $koneksi->connect_error);
+date_default_timezone_set('Asia/Jakarta');
+?>
+
+--- models/KalkulatorModel.php ---
+<?php
+class KalkulatorModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    // READ
+    public function getRiwayat() {
+        return $this->db->query("SELECT * FROM riwayat_hitung ORDER BY id_riwayat DESC");
+    }
+
+    // CREATE (Simpan hasil hitungan ke DB)
+    public function simpanHitung($a1,$op, $a2,$hasil) {
+        return $this->db->query("INSERT INTO riwayat_hitung (angka_1, operator, angka_2, hasil) 
+                                 VALUES ('$a1', '$op', '$a2', '$hasil')");
+    }
+
+    // UPDATE (Kasih catatan buat riwayat itungan)
+    public function updateCatatan($id,$catatan) {
+        $id = (int)$id;
+        $catatan = mysqli_real_escape_string($this->db,$catatan);
+        return $this->db->query("UPDATE riwayat_hitung SET catatan = '$catatan' WHERE id_riwayat =$id");
+    }
+
+    // DELETE
+    public function hapusRiwayat($id) {
+        return $this->db->query("DELETE FROM riwayat_hitung WHERE id_riwayat = ".(int)$id);
+    }
+    
+    // DELETE ALL (Bersihin layar)
+    public function bersihkanSemua() {
+        return $this->db->query("TRUNCATE TABLE riwayat_hitung");
+    }
+}
+?>
+
+
+====================================================================
+LANGKAH 3: CONTROLLER (Logika Matematikanya di sini!)
+====================================================================
+
+--- controllers/KalkulatorController.php ---
+<?php
+require_once 'models/KalkulatorModel.php';
+
+class KalkulatorController {
+    private $model;
+    public function __construct($koneksi) { $this->model = new KalkulatorModel($koneksi); }
+
+    public function index() {
+        $riwayat =$this->model->getRiwayat();
+        require_once 'views/kalkulator_view.php';
+    }
+
+    // LOGIKA KALKULATORNYA CUY
+    public function prosesHitung() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {$angka1 = (float)$_POST['angka1'];$operator = $_POST['operator'];$angka2 = (float)$_POST['angka2'];$hasil = 0;
+
+            // Proses Matematika
+            switch ($operator) {
+                case '+': $hasil = $angka1 +$angka2; break;
+                case '-': $hasil = $angka1 -$angka2; break;
+                case 'x': $hasil = $angka1 * $angka2; break;
+                case '/': 
+                    // Pencegahan Error Dibagi Nol
+                    if($angka2 == 0) {
+                        header("Location: index.php?pesan=error_nol"); exit;
+                    }
+                    $hasil = $angka1 / $angka2; 
+                    break;
+            }
+
+            // Langsung simpan ke Database (CREATE)
+            $this->model->simpanHitung($angka1,$operator, $angka2,$hasil);
+            header("Location: index.php?pesan=sukses_hitung"); exit;
+        }
+    }
+
+    public function simpanCatatan() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {$this->model->updateCatatan($_POST['id_riwayat'],$_POST['catatan']);
+            header("Location: index.php?pesan=sukses_update"); exit;
+        }
+    }
+
+    public function hapus() {
+        if (isset($_GET['id'])) {
+            $this->model->hapusRiwayat($_GET['id']);
+            header("Location: index.php?pesan=sukses_hapus"); exit;
+        }
+    }
+    
+    public function reset() {
+        $this->model->bersihkanSemua();
+        header("Location: index.php?pesan=sukses_reset"); exit;
+    }
+}
+?>
+
+
+====================================================================
+LANGKAH 4: VIEW (UI Kalkulator & Tabel Riwayat di Sebelahnya)
+====================================================================
+
+--- views/kalkulator_view.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Kalkulator MVC</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style> 
+        body { background-color: #212529; color: white; }
+        .kalkulator-box { background: #343a40; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+    </style>
+</head>
+<body class="py-5">
+
+    <div class="container">
+        <!-- NOTIFIKASI -->
+        <?php if(isset($_GET['pesan'])): ?>
+            <script>
+                let p = '<?php echo $_GET['pesan']; ?>';
+                if(p=='error_nol') Swal.fire('Error!', 'Angka tidak bisa dibagi NOL (0)!', 'error');
+                if(p=='sukses_hitung') Swal.fire({toast:true, position:'top-end', icon:'success', title:'Hasil tersimpan!', showConfirmButton:false, timer:1500});
+            </script>
+        <?php endif; ?>
+
+        <div class="row g-4">
+            
+            <!-- BAGIAN KIRI: MESIN KALKULATOR -->
+            <div class="col-md-4">
+                <div class="card kalkulator-box border-0 p-4">
+                    <h3 class="fw-bold text-center text-info mb-4"><i class="fa-solid fa-calculator me-2"></i>Kalkulator</h3>
+                    
+                    <form action="index.php?page=hitung" method="POST">
+                        <div class="mb-3">
+                            <label class="form-label text-white-50 small">Angka Pertama</label>
+                            <input type="number" step="any" name="angka1" class="form-control form-control-lg bg-dark text-white border-secondary text-end fs-4" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label text-white-50 small">Operasi</label>
+                            <div class="d-flex justify-content-between gap-2">
+                                <!-- Pakai Radio Button UI biar kerasa kayak mencet tombol kalkulator -->
+                                <input type="radio" class="btn-check" name="operator" id="tambah" value="+" checked>
+                                <label class="btn btn-outline-info w-100 fs-4 fw-bold" for="tambah">+</label>
+
+                                <input type="radio" class="btn-check" name="operator" id="kurang" value="-">
+                                <label class="btn btn-outline-info w-100 fs-4 fw-bold" for="kurang">-</label>
+
+                                <input type="radio" class="btn-check" name="operator" id="kali" value="x">
+                                <label class="btn btn-outline-info w-100 fs-4 fw-bold" for="kali">x</label>
+
+                                <input type="radio" class="btn-check" name="operator" id="bagi" value="/">
+                                <label class="btn btn-outline-info w-100 fs-4 fw-bold" for="bagi">÷</label>
+                            </div>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="form-label text-white-50 small">Angka Kedua</label>
+                            <input type="number" step="any" name="angka2" class="form-control form-control-lg bg-dark text-white border-secondary text-end fs-4" required>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary btn-lg w-100 fw-bold fs-3 rounded-pill">=</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- BAGIAN KANAN: TABEL LOG CRUD -->
+            <div class="col-md-8">
+                <div class="card kalkulator-box border-0 p-4 h-100">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h4 class="fw-bold m-0"><i class="fa-solid fa-clock-rotate-left me-2 text-warning"></i>Riwayat Hitungan</h4>
+                        <a href="index.php?page=reset" class="btn btn-sm btn-outline-danger rounded-pill px-3" onclick="return confirm('Hapus semua riwayat?');">Clear All</a>
+                    </div>
+                    
+                    <div class="table-responsive">
+                        <table class="table table-dark table-hover align-middle">
+                            <thead class="table-secondary text-dark">
+                                <tr>
+                                    <th>Rumus</th>
+                                    <th>Hasil Akhir</th>
+                                    <th>Catatan (Update)</th>
+                                    <th>Aksi (Delete)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php while($row =$riwayat->fetch_assoc()): ?>
+                                <tr>
+                                    <td class="fs-5 font-monospace">
+                                        <?php echo $row['angka_1'] ." ". $row['operator'] ." ". $row['angka_2']; ?>
+                                    </td>
+                                    <td class="fs-4 fw-bold text-success font-monospace">
+                                        = <?php echo $row['hasil']; ?>
+                                    </td>
+                                    <td>
+                                        <!-- FORM UPDATE LANGSUNG DI DALAM TABEL -->
+                                        <form action="index.php?page=catatan" method="POST" class="d-flex gap-2">
+                                            <input type="hidden" name="id_riwayat" value="<?php echo $row['id_riwayat']; ?>">
+                                            <input type="text" name="catatan" class="form-control form-control-sm bg-dark text-white border-secondary" value="<?php echo $row['catatan']; ?>">
+                                            <button type="submit" class="btn btn-sm btn-info fw-bold">Save</button>
+                                        </form>
+                                    </td>
+                                    <td>
+                                        <a href="index.php?page=hapus&id=<?php echo $row['id_riwayat']; ?>" class="btn btn-sm btn-danger rounded-3"><i class="fa-solid fa-trash"></i></a>
+                                    </td>
+                                </tr>
+                                <?php endwhile; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</body>
+</html>
+
+
+====================================================================
+LANGKAH 5: ROUTER PUSAT (index.php)
+====================================================================
+<?php
+require_once 'config/database.php';
+require_once 'controllers/KalkulatorController.php';
+
+$app = new KalkulatorController($koneksi);$page = isset($_GET['page']) ?$_GET['page'] : '';
+
+switch ($page) {
+    case 'hitung':
+        $app->prosesHitung(); break;
+    case 'catatan':
+        $app->simpanCatatan(); break;
+    case 'hapus':
+        $app->hapus(); break;
+    case 'reset':
+        $app->reset(); break;
+    default:
+        $app->index(); break;
+}
+?>
+====================================================================
