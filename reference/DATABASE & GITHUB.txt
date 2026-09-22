@@ -1,0 +1,158 @@
+Ini dia panduan super komplit buat menguasai pondasi database (SQL) dari nol sampai cara push kodenya ke GitHub. Kita bedah satu-satu dengan bahasa yang gampang lu pahami bro.
+
+1. Perintah Dasar Hapus & Buat (SQL)
+Lu bisa ketik perintah ini di menu SQL pada phpMyAdmin.
+
+Cara Hapus Database: Akan menghapus seluruh database beserta isinya sampai akar.
+
+SQL
+DROP DATABASE nama_database_lu;
+Cara Hapus Table: Akan menghapus satu tabel tertentu saja di dalam database.
+
+SQL
+DROP TABLE nama_tabel_lu;
+Cara Kosongin Isi Table (Tanpa Hapus Tabelnya): Kalau lu cuma mau hapus datanya tapi tabelnya tetap ada.
+
+SQL
+TRUNCATE TABLE nama_tabel_lu;
+Cara Buat Table (Format Standar yang Bisa Dipakai Di Mana Aja):
+Setiap bikin tabel, lu wajib punya id yang di-setting AUTO_INCREMENT (nambah sendiri) dan PRIMARY KEY (kunci utama).
+
+SQL
+CREATE TABLE contoh_tabel (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    judul VARCHAR(150) NOT NULL,
+    deskripsi TEXT NOT NULL,
+    tanggal TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+2. Desain Database Sesuai Kebutuhan (Login vs Register vs Dashboard)
+A. Database untuk "Login Biasa" (Tanpa Register)
+Kalau sistem lu cuma dipakai sama Admin (nggak butuh form daftar), lu cuma butuh tabel super simple. Data adminnya lu insert manual dari phpMyAdmin.
+
+SQL
+CREATE TABLE admin (
+    id_admin INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL,
+    password VARCHAR(255) NOT NULL
+);
+-- Tambah data manual lewat SQL:
+INSERT INTO admin (username, password) VALUES ('admin1', '12345');
+B. Database untuk "Login + Register" (Banyak User/Role)
+Kalau sistem lu dipakai banyak orang (Siswa, Guru, dll), lu butuh tabel yang lebih lengkap.
+
+SQL
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    nama_lengkap VARCHAR(100) NOT NULL,
+    username VARCHAR(50) NOT NULL UNIQUE, -- UNIQUE biar username ga boleh kembar
+    password VARCHAR(255) NOT NULL,
+    role ENUM('Admin', 'Siswa') DEFAULT 'Siswa' -- Pembagian hak akses
+);
+C. Database Dashboard & "Sambung-Menyambung" (Relasi)
+Di dashboard, biasanya data saling nyambung. Misalnya: Siapa user yang nambahin barang ini?
+Untuk menyambungkannya, tabel barang harus punya kolom id_user (disebut Foreign Key).
+
+SQL
+CREATE TABLE barang (
+    id_barang INT AUTO_INCREMENT PRIMARY KEY,
+    id_user INT NOT NULL, -- KUNCI PENYAMBUNG KE TABEL USERS
+    nama_barang VARCHAR(100) NOT NULL,
+    stok INT NOT NULL
+);
+Cara Manggil Data yang Nyambung (JOIN Query):
+Di Model lu, lu panggil datanya pakai INNER JOIN biar ketahuan barang ini milik siapa.
+
+SQL
+SELECT barang.nama_barang, barang.stok, users.nama_lengkap 
+FROM barang 
+INNER JOIN users ON barang.id_user = users.id_user;
+Hasilnya di dashboard, lu bisa nampilin teks: "Laptop Asus ditambahkan oleh Rixsan".
+
+3. Logika Alert Keren di Dashboard
+Biar dashboard lu nyapa user pas baru masuk, lu pakai kombinasi PHP Session dan JavaScript (SweetAlert2).
+
+Di AuthController.php (saat login berhasil), tambahkan satu session khusus penanda:
+
+PHP
+$_SESSION['id_user'] = $user['id_user'];
+$_SESSION['nama'] = $user['nama_lengkap'];
+$_SESSION['baru_login'] = true; // <-- INI TRIGGERNYA
+header("Location: index.php?page=dashboard");
+Lalu di views/dashboard.php, taruh kode JS ini di paling bawah sebelum </body>:
+
+HTML
+<!-- Pastikan script SweetAlert udah di-load di <head> -->
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+<?php if(isset($_SESSION['baru_login'])): ?>
+<script>
+    Swal.fire({
+        title: 'Halo, <?php echo $_SESSION['nama']; ?>! 👋',
+        text: 'Selamat datang di Dashboard Utama.',
+        icon: 'success',
+        toast: true,
+        position: 'top-end',
+        showConfirmButton: false,
+        timer: 3000,
+        timerProgressBar: true
+    });
+</script>
+<?php 
+    // Hapus session ini biar alert ga muncul lagi pas halaman di-refresh
+    unset($_SESSION['baru_login']); 
+endif; 
+?>
+4. Tutorial Push ke GitHub (Dari Nol Sampai Online)
+Biar kodingan lu aman dan bisa dipamerin, lu wajib push ke GitHub. Buka Terminal/CMD lu, arahkan ke folder project (misal: cd C:/xampp/htdocs/project_lu), lalu jalankan perintah ini berurutan:
+
+Inisialisasi Git: (Bikin folder ini jadi repository)
+
+Bash
+git init
+Tambahkan Semua File: (Titik artinya masukin semua file)
+
+Bash
+git add .
+Bungkus Kode (Commit): (Kasih catatan perubahan)
+
+Bash
+git commit -m "Upload project pertama MVC"
+Pilih Branch Utama:
+
+Bash
+git branch -M main
+Sambungkan ke GitHub: (Bikin repo kosong dulu di website GitHub, lalu copy link URL-nya)
+
+Bash
+git remote add origin https://github.com/username-lu/nama-repo-lu.git
+Push ke GitHub: (Kirim datanya)
+
+Bash
+git push -u origin main
+5. Cara Mengatasi Error Git yang Paling Sering Terjadi
+Error 1: "fatal: remote origin already exists."
+Penyebab: Lu salah masukin link URL pas langkah ke-5, trus lu mau ngulang tapi ditolak.
+Solusi: Hapus sambungan yang lama, lalu masukin yang baru.
+
+Bash
+git remote rm origin
+git remote add origin https://link-yang-bener.git
+Error 2: "failed to push some refs to..." / "Updates were rejected"
+Penyebab: Di repo GitHub lu ada file yang nggak ada di laptop lu (misalnya lu bikin file README.md pas bikin repo di web).
+Solusi Aman: Tarik dulu data dari web ke laptop lu, baru di-push ulang.
+
+Bash
+git pull origin main --rebase
+git push -u origin main
+Solusi Bar-bar (Force Push): Hati-hati, ini akan menimpa/menghapus apapun yang ada di web GitHub dengan data yang ada di laptop lu.
+
+Bash
+git push -u origin main -f
+Error 3: "Author identity unknown"
+Penyebab: Laptop lu belum dikasih tau nama dan email GitHub lu (biasanya kalau baru pertama kali instal Git).
+Solusi: Ketik ini di terminal:
+
+Bash
+git config --global user.email "email.github.lu@gmail.com"
+git config --global user.name "Nama Lu"
+Setelah itu ulangi langkah git commit dan git push.
