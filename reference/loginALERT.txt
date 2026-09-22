@@ -1,0 +1,199 @@
+Sebenernya kodenya udah gw selipin di materi-materi sebelumnya (kayak di materi Perpus atau materi Universal) cuy. Tapi gw paham, karena kemaren kodenya nyampur sama fitur CRUD yang panjang-panjang, bagian Alur Nama Login -> Dashboard ini mungkin agak tertumpuk.
+
+Ini pertanyaan yang cerdas banget. Gimana caranya browser bisa "ingat" nama kita dari form login sampai ke halaman dashboard?
+
+Kunci rahasianya cuma satu kata: SESSION. Session itu ibarat "ID Card" / "Tanda Pengenal" kasat mata yang dikalungkan ke leher user oleh PHP, dan akan terus dibawa ke halaman manapun selama dia belum klik Logout.
+
+Biar pemahaman lu 100% sempurna buat ujian besok, ini MATERI KHUSUS BEDAH ALUR LOGIN KE DASHBOARD.
+
+Plaintext
+====================================================================================================
+MATERI KHUSUS: ALUR NAMA USER DARI LOGIN MENUJU DASHBOARD (SESSION MAGIC)
+====================================================================================================
+
+[BAGAIMANA ALURNYA BEKERJA?]
+1. DATABASE: Menyimpan data `nama_lengkap` (Misal: Rixsan Joulfiand).
+2. FORM LOGIN: User masukin `username` dan `password`.
+3. CONTROLLER: Nyari username & password itu di Database. 
+4. PROSES SESSION (KUNCI!): Kalau ketemu, Controller akan mengambil `nama_lengkap` dari Database, 
+   lalu memasukkannya ke dalam dompet Session: `$_SESSION['nama_user'] = 'Rixsan Joulfiand'`.
+5. DASHBOARD: Halaman dashboard tinggal buka dompet Session dan mencetaknya pakai `echo`.
+
+====================================================================
+1. BENTUK DATABASE NYA (SUPER SIMPLE)
+====================================================================
+CREATE TABLE users (
+    id_user INT AUTO_INCREMENT PRIMARY KEY,
+    nama_lengkap VARCHAR(100) NOT NULL,   -- <-- INI YANG BAKAL DITAMPILIN DI DASHBOARD
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL
+);
+
+-- Masukin 1 data manual kalau lu disuruh bikin yang "Login Biasa" (Tanpa form Register)
+INSERT INTO users (nama_lengkap, username, password) VALUES ('Rixsan Master', 'admin', '12345');
+
+
+====================================================================
+2. CONTROLLER: AUTHENTICATION (Penangkap & Pembuat Session)
+====================================================================
+Perhatikan bagian di dalam `if ($cek_user)`. Di situlah nama user ditangkap!
+
+<?php
+class AuthController {
+    private $db;
+    public function __construct($koneksi) { 
+        $this->db =$koneksi; 
+        if(session_status() === PHP_SESSION_NONE) session_start(); 
+    }
+
+    public function proses_login() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {$user = $_POST['username'];$pass = $_POST['password']; // Ingat, kalau di soal suruh pake md5, jadinya md5($_POST['password'])
+
+            // 1. Cari user di database
+            $query =$this->db->query("SELECT * FROM users WHERE username = '$user' AND password = '$pass'");
+            $cek_user =$query->fetch_assoc();
+
+            if ($cek_user) {
+                // 2. MAGISNYA DI SINI! (Memasukkan data ke dompet Session)
+                $_SESSION['id_user'] =$cek_user['id_user'];
+                
+                // Ambil kolom nama_lengkap dari database, simpan ke memori browser!
+                $_SESSION['nama_lengkap'] =$cek_user['nama_lengkap']; 
+                
+                // Opsional: Bikin trigger alert buat nyapa di dashboard
+                $_SESSION['alert_sapaan'] = true; 
+
+                // 3. Lempar ke Dashboard
+                header("Location: index.php?page=dashboard"); 
+                exit;
+            } else {
+                header("Location: index.php?alert=gagal"); exit;
+            }
+        }
+        require_once 'views/login.php';
+    }
+}
+?>
+
+
+====================================================================
+3. VIEWS: FORM LOGIN BIASA VS LOGIN + REGISTER
+====================================================================
+
+--- A. views/login.php (Versi Login Biasa - Tanpa Register) ---
+<!-- Gunakan ini kalau penguji cuma minta form login thok -->
+<div class="card shadow-lg p-5 rounded-4 mx-auto" style="max-width: 400px; margin-top: 100px;">
+    <h3 class="fw-bold text-center mb-4">Sistem Login</h3>
+    <form action="index.php" method="POST">
+        <div class="mb-3">
+            <label class="form-label text-muted small fw-bold">Username</label>
+            <input type="text" name="username" class="form-control" required>
+        </div>
+        <div class="mb-4">
+            <label class="form-label text-muted small fw-bold">Password</label>
+            <input type="password" name="password" class="form-control" required>
+        </div>
+        <button type="submit" class="btn btn-primary w-100 fw-bold rounded-pill">LOGIN</button>
+    </form>
+</div>
+
+--- B. views/login_register.php (Versi Kalau Butuh Register) ---
+<!-- Ini kalau sistem lu butuh pendaftaran user baru (kayak E-Voting atau Perpustakaan) -->
+<div class="card shadow-lg p-5 rounded-4 mx-auto" style="max-width: 400px; margin-top: 100px;">
+    
+    <!-- Tab Navigasi -->
+    <ul class="nav nav-pills mb-4 justify-content-center" id="pills-tab">
+        <li class="nav-item"><a class="nav-link active" data-bs-toggle="pill" href="#login">Login</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="pill" href="#register">Register</a></li>
+    </ul>
+
+    <div class="tab-content">
+        <!-- FORM LOGIN -->
+        <div class="tab-pane fade show active" id="login">
+            <form action="index.php?page=login" method="POST">
+                <input type="text" name="username" class="form-control mb-3" placeholder="Username" required>
+                <input type="password" name="password" class="form-control mb-4" placeholder="Password" required>
+                <button type="submit" class="btn btn-primary w-100 fw-bold rounded-pill">LOGIN</button>
+            </form>
+        </div>
+
+        <!-- FORM REGISTER -->
+        <div class="tab-pane fade" id="register">
+            <form action="index.php?page=register" method="POST">
+                <!-- NAMA LENGKAP DIINPUT DI SINI -->
+                <input type="text" name="nama_lengkap" class="form-control mb-3" placeholder="Nama Lengkap Lu" required> 
+                <input type="text" name="username" class="form-control mb-3" placeholder="Buat Username" required>
+                <input type="password" name="password" class="form-control mb-4" placeholder="Buat Password" required>
+                <button type="submit" class="btn btn-success w-100 fw-bold rounded-pill">DAFTAR SEKARANG</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+
+====================================================================
+4. VIEWS: DASHBOARD (Mencetak Nama dari Session)
+====================================================================
+Bagaimana menampilkannya? Gampang banget! Lu tinggal panggil `<?php echo $_SESSION['nama_lengkap']; ?>` di mana pun lu mau. Bisa di pojok kanan Navbar, bisa di judul tengah halaman, atau di dalam script SweetAlert!
+
+<?php 
+// 1. Wajib ada session_start() di paling atas file!
+if(session_status() === PHP_SESSION_NONE) session_start();
+
+// 2. Keamanan: Kalau 'id_user' kosong, tendang balik ke login!
+if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Dashboard Admin</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body>
+    
+    <!-- NAVBAR (Nama tampil di pojok kanan) -->
+    <nav class="navbar navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand fw-bold">APP KITA</a>
+            <div class="text-white">
+                <!-- CARA NAMPILIN NAMA KE-1: Di dalam teks biasa -->
+                Selamat bekerja, <strong><?php echo $_SESSION['nama_lengkap']; ?></strong>! 
+                <a href="index.php?page=logout" class="btn btn-sm btn-danger ms-3">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- KONTEN TENGAH (Nama tampil super besar) -->
+    <div class="container mt-5 text-center">
+        <!-- CARA NAMPILIN NAMA KE-2: Di dalam tag H1 (Heading) -->
+        <h1 class="display-4 fw-bold">Halo, <?php echo $_SESSION['nama_lengkap']; ?>!</h1>
+        <p class="fs-5 text-muted">Akses dashboard berhasil dibuka.</p>
+    </div>
+
+    <!-- CARA NAMPILIN NAMA KE-3: Di dalam Notifikasi Pop-up (SweetAlert) -->
+    <?php if(isset($_SESSION['alert_sapaan'])): ?>
+    <script>
+        Swal.fire({
+            title: 'Welcome Back, <?php echo $_SESSION['nama_lengkap']; ?>!',
+            text: 'Hari yang indah buat ngoding cuy!',
+            icon: 'success',
+            showConfirmButton: false,
+            timer: 3000
+        });
+    </script>
+    <?php unset($_SESSION['alert_sapaan']); // Hapus alert biar ga muncul lagi pas di-refresh ?>
+    <?php endif; ?>
+
+</body>
+</html>
+Kesimpulan Alur (Biar Lu Makin Paham):
+Waktu user input "Rixsan Joulfiand" di form Register, data itu masuk ke database.
+
+Waktu user Login, kodingan PHP lu (AuthController) pergi ke database buat nyari baris data milik user tersebut.
+
+Ketemu! Terus Controller bilang ke server: "Tolong ingat nama Rixsan Joulfiand ini di dalam keranjang $_SESSION['nama_lengkap'] ya!"
+
+Waktu browser pindah ke dashboard.php, HTML lu nanya ke server: "Eh, tadi nama yang disimpen di $_SESSION siapa ya? Cetakin di sini dong (echo)." Muncul deh nama lu di pojok kanan atas!
+
+Materi ini adalah nyawanya sistem Login PHP, bro. Kalau besok penguji tanya, "Gimana cara website bisa tau kalau yang login itu kamu?", lu tinggal jawab lantang: "Data dari database diambil lewat Controller saat proses verifikasi login, lalu diseret dan disimpan ke dalam superglobal variable PHP bernama $_SESSION, Pak/Bu! Variable ini akan menetap di memori browser sampai kita menjalankan fungsi session_destroy()."
