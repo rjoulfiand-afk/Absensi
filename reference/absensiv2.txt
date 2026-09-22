@@ -1,0 +1,414 @@
+====================================================================
+MATERI ULTIMATE: SISTEM ABSENSI REAL-TIME (TANPA LOGIN - FULL CRUD)
+====================================================================
+
+[PENJELASAN ALUR KERJA (LOGIC FLOW)]
+1. Web dibuka -> File `index.php` jalan -> Karena nggak ada sistem login, langsung diarahkan ke `AbsensiController->index()`.
+2. Di Dashboard -> Terdapat JavaScript yang menjalankan jam secara real-time.
+3. Saat klik "Tambah Data" -> Masuk ke form input (Guru, Mapel, Siswa, Status). Waktu input direkam otomatis.
+4. Saat klik "Simpan" -> Controller ngirim data ke Model -> Model mengeksekusi INSERT ke database -> Kembali ke Dashboard bawa SweetAlert.
+
+[STRUKTUR FOLDER]
+app_absen/
+├── config/database.php
+├── controllers/AbsensiController.php
+├── models/AbsensiModel.php
+├── views/
+│   ├── dashboard.php
+│   ├── tambah_absen.php
+│   └── edit_absen.php
+└── index.php
+
+
+====================================================================
+LANGKAH 1: PEMBUATAN DATABASE
+====================================================================
+Buka phpMyAdmin, bikin database: `db_absensi_v3`
+Jalankan SQL ini untuk membuat tabel utamanya:
+
+CREATE TABLE rekap_hadir (
+    id_absen INT AUTO_INCREMENT PRIMARY KEY,
+    tanggal DATE NOT NULL,
+    waktu_input TIME NOT NULL,
+    nama_guru VARCHAR(100) NOT NULL,
+    mata_pelajaran VARCHAR(100) NOT NULL,
+    nama_siswa VARCHAR(100) NOT NULL,
+    status ENUM('H', 'I', 'S', 'A') NOT NULL
+);
+
+-- Masukin 1 data pancingan biar tabel ga kosong
+INSERT INTO rekap_hadir (tanggal, waktu_input, nama_guru, mata_pelajaran, nama_siswa, status) 
+VALUES (CURDATE(), CURTIME(), 'Pak Budi', 'Pemrograman Web', 'Rixsan Joulfiand', 'H');
+
+
+====================================================================
+LANGKAH 2: KONEKSI DATABASE (config/database.php)
+====================================================================
+<?php
+$koneksi = new mysqli("localhost", "root", "", "db_absensi_v3");
+if ($koneksi->connect_error) die("Koneksi Error cuy: " . $koneksi->connect_error);
+// Set Waktu ke Indonesia (PENTING BUAT REAL-TIME)
+date_default_timezone_set('Asia/Jakarta');
+?>
+
+
+====================================================================
+LANGKAH 3: MODEL - MESIN DATABASE (models/AbsensiModel.php)
+====================================================================
+<?php
+class AbsensiModel {
+    private $db;
+    public function __construct($koneksi) { $this->db =$koneksi; }
+
+    // READ: Tampilkan data dari yang terbaru
+    public function getAll() {
+        return $this->db->query("SELECT * FROM rekap_hadir ORDER BY tanggal DESC, waktu_input DESC");
+    }
+
+    // READ 1 DATA: Untuk form Edit
+    public function getById($id) {
+        return $this->db->query("SELECT * FROM rekap_hadir WHERE id_absen = ".(int)$id)->fetch_assoc();
+    }
+
+    // CREATE: Simpan absen baru
+    public function tambah($guru, $mapel,$siswa, $status,$tgl, $waktu) {$guru = mysqli_real_escape_string($this->db,$guru);
+        $mapel = mysqli_real_escape_string($this->db, $mapel);$siswa = mysqli_real_escape_string($this->db,$siswa);
+        
+        return $this->db->query("INSERT INTO rekap_hadir (tanggal, waktu_input, nama_guru, mata_pelajaran, nama_siswa, status) 
+                                 VALUES ('$tgl', '$waktu', '$guru', '$mapel', '$siswa', '$status')");
+    }
+
+    // UPDATE: Edit absen
+    public function update($id, $guru,$mapel, $siswa,$status) {
+        $id = (int)$id;
+        $guru = mysqli_real_escape_string($this->db,$guru);
+        $mapel = mysqli_real_escape_string($this->db, $mapel);$siswa = mysqli_real_escape_string($this->db,$siswa);
+        
+        return $this->db->query("UPDATE rekap_hadir SET nama_guru='$guru', mata_pelajaran='$mapel', 
+                                 nama_siswa='$siswa', status='$status' WHERE id_absen=$id");
+    }
+
+    // DELETE: Hapus absen
+    public function hapus($id) {
+        return $this->db->query("DELETE FROM rekap_hadir WHERE id_absen = ".(int)$id);
+    }
+}
+?>
+
+
+====================================================================
+LANGKAH 4: CONTROLLER - PENGATUR LALU LINTAS (controllers/AbsensiController.php)
+====================================================================
+<?php
+require_once 'models/AbsensiModel.php';
+
+class AbsensiController {
+    private $model;
+    public function __construct($koneksi) { $this->model = new AbsensiModel($koneksi); }
+
+    // Halaman Utama Dashboard
+    public function index() {
+        $data_absen =$this->model->getAll();
+        require_once 'views/dashboard.php';
+    }
+
+    // Proses Tambah Data
+    public function form_tambah() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {$tgl_sekarang = date('Y-m-d');
+            $waktu_sekarang = date('H:i:s'); // Rekam jam persis pas disubmit$this->model->tambah($_POST['guru'],$_POST['mapel'], $_POST['siswa'],$_POST['status'], $tgl_sekarang,$waktu_sekarang);
+            header("Location: index.php?pesan=tambah"); exit;
+        }
+        require_once 'views/tambah_absen.php';
+    }
+
+    // Proses Edit Data
+    public function form_edit() {
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            $this->model->update($_POST['id'], $_POST['guru'],$_POST['mapel'], $_POST['siswa'],$_POST['status']);
+            header("Location: index.php?pesan=edit"); exit;
+        } else {
+            $data_edit = $this->model->getById($_GET['id']);
+            require_once 'views/edit_absen.php';
+        }
+    }
+
+    // Proses Hapus Data
+    public function aksi_hapus() {
+        if(isset($_GET['id'])) $this->model->hapus($_GET['id']);
+        header("Location: index.php?pesan=hapus"); exit;
+    }
+}
+?>
+
+
+====================================================================
+LANGKAH 5: VIEWS (TAMPILAN UI/UX BOOTSTRAP 5)
+====================================================================
+
+--- A. views/dashboard.php (Dashboard Real-Time) ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Live Absensi Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        body { background-color: #f0f2f5; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .clock-display { font-size: 3rem; font-weight: 900; letter-spacing: 2px; text-shadow: 2px 2px 4px rgba(0,0,0,0.2); }
+    </style>
+</head>
+<body>
+    
+    <!-- HEADER APP -->
+    <nav class="navbar navbar-dark bg-dark shadow-sm py-3 mb-4">
+        <div class="container">
+            <a class="navbar-brand fw-bold fs-4" href="#"><i class="fa-solid fa-school me-2"></i>Portal Kelas Live</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- NOTIFIKASI SWEETALERT -->
+        <?php if(isset($_GET['pesan'])): ?>
+            <script>
+                let p = '<?php echo $_GET['pesan']; ?>';
+                if(p=='tambah') Swal.fire({icon:'success', title:'Tercatat!', text:'Absen siswa berhasil direkam.', timer:2000, showConfirmButton:false});
+                if(p=='edit') Swal.fire({icon:'success', title:'Diupdate!', text:'Perubahan status berhasil.', timer:2000, showConfirmButton:false});
+                if(p=='hapus') Swal.fire({icon:'info', title:'Dihapus!', text:'Data absen lenyap.', timer:2000, showConfirmButton:false});
+            </script>
+        <?php endif; ?>
+
+        <!-- WIDGET REAL-TIME CLOCK -->
+        <div class="card bg-primary text-white border-0 shadow-lg rounded-4 overflow-hidden mb-4">
+            <div class="card-body p-5 d-flex justify-content-between align-items-center">
+                <div>
+                    <h5 class="fw-bold mb-1 opacity-75 text-uppercase">Waktu Server Saat Ini</h5>
+                    <div id="live-clock" class="clock-display">00:00:00 WIB</div>
+                    <div id="live-date" class="fs-5 fw-semibold mt-1">Memuat Tanggal...</div>
+                </div>
+                <div class="d-none d-md-block opacity-50">
+                    <i class="fa-regular fa-clock" style="font-size: 6rem;"></i>
+                </div>
+            </div>
+        </div>
+
+        <!-- TABEL DATA ABSENSI (READ) -->
+        <div class="card border-0 shadow-sm rounded-4 mb-5">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center py-4 border-0 rounded-top-4">
+                <h4 class="fw-bold m-0 text-dark"><i class="fa-solid fa-users me-2 text-primary"></i>Log Kehadiran Hari Ini</h4>
+                <!-- TOMBOL TAMBAH (CREATE) -->
+                <a href="index.php?page=tambah" class="btn btn-primary fw-bold rounded-pill px-4 shadow-sm">
+                    <i class="fa-solid fa-plus me-1"></i> Input Absen
+                </a>
+            </div>
+            
+            <div class="card-body p-4 pt-0">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle">
+                        <thead class="table-light text-secondary text-uppercase small">
+                            <tr>
+                                <th>No</th>
+                                <th>Waktu & Tgl</th>
+                                <th>Guru Pengajar</th>
+                                <th>Mata Pelajaran</th>
+                                <th>Nama Siswa</th>
+                                <th>Status</th>
+                                <th class="text-center">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php $no=1; while($row =$data_absen->fetch_assoc()): ?>
+                            <tr>
+                                <td class="fw-bold text-muted"><?php echo $no++; ?></td>
+                                <td>
+                                    <span class="fw-bold text-dark"><?php echo date('H:i', strtotime($row['waktu_input'])); ?> WIB</span><br>
+                                    <small class="text-muted"><?php echo date('d M Y', strtotime($row['tanggal'])); ?></small>
+                                </td>
+                                <td class="fw-bold text-primary"><?php echo $row['nama_guru']; ?></td>
+                                <td><?php echo $row['mata_pelajaran']; ?></td>
+                                <td class="fw-bold"><?php echo $row['nama_siswa']; ?></td>
+                                <td>
+                                    <!-- BADGE WARNA-WARNI H-I-A-S -->
+                                    <?php 
+                                        $st =$row['status'];
+                                        if($st == 'H') echo '<span class="badge bg-success rounded-pill px-3 py-2">Hadir (H)</span>';
+                                        elseif($st == 'I') echo '<span class="badge bg-primary rounded-pill px-3 py-2">Izin (I)</span>';
+                                        elseif($st == 'S') echo '<span class="badge bg-warning text-dark rounded-pill px-3 py-2">Sakit (S)</span>';
+                                        elseif($st == 'A') echo '<span class="badge bg-danger rounded-pill px-3 py-2">Alpa (A)</span>';
+                                    ?>
+                                </td>
+                                <td class="text-center">
+                                    <!-- UPDATE & DELETE -->
+                                    <a href="index.php?page=edit&id=<?php echo $row['id_absen']; ?>" class="btn btn-outline-dark btn-sm rounded-circle shadow-sm me-1" title="Edit"><i class="fa-solid fa-pen"></i></a>
+                                    <a href="index.php?page=hapus&id=<?php echo $row['id_absen']; ?>" class="btn btn-outline-danger btn-sm rounded-circle shadow-sm" onclick="return confirm('Hapus data ini?');" title="Hapus"><i class="fa-solid fa-trash"></i></a>
+                                </td>
+                            </tr>
+                            <?php endwhile; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SCRIPT JAM REAL-TIME JAVASCRIPT -->
+    <script>
+        function jalankanJam() {
+            const sekarang = new Date();
+            
+            // Format Jam
+            let jam = String(sekarang.getHours()).padStart(2, '0');
+            let menit = String(sekarang.getMinutes()).padStart(2, '0');
+            let detik = String(sekarang.getSeconds()).padStart(2, '0');
+            document.getElementById('live-clock').innerHTML = `${jam}:${menit}:${detik} WIB`;
+
+            // Format Tanggal
+            const opsiTgl = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+            document.getElementById('live-date').innerHTML = sekarang.toLocaleDateString('id-ID', opsiTgl);
+        }
+        setInterval(jalankanJam, 1000);
+        jalankanJam(); // Panggil sekali biar ga nunggu 1 detik
+    </script>
+</body>
+</html>
+
+--- B. views/tambah_absen.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Input Absen</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light py-5">
+    <div class="container">
+        <div class="card border-0 shadow-lg mx-auto rounded-4 p-5" style="max-width: 600px;">
+            <h3 class="fw-bold mb-4 text-primary text-center">Catat Kehadiran Siswa</h3>
+            <form action="index.php?page=tambah" method="POST">
+                
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label fw-bold small text-muted">Nama Guru</label>
+                        <input type="text" name="guru" class="form-control form-control-lg bg-light border-0" placeholder="Contoh: Pak Budi" required>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label fw-bold small text-muted">Mata Pelajaran</label>
+                        <input type="text" name="mapel" class="form-control form-control-lg bg-light border-0" placeholder="Contoh: Matematika" required>
+                    </div>
+                </div>
+
+                <div class="mb-4 mt-3 border-top pt-4">
+                    <label class="form-label fw-bold small text-muted">Nama Siswa</label>
+                    <input type="text" name="siswa" class="form-control form-control-lg bg-light border-0" placeholder="Masukkan nama siswa..." required>
+                </div>
+
+                <div class="mb-5">
+                    <label class="form-label fw-bold small text-muted">Keterangan (H/I/S/A)</label>
+                    <select name="status" class="form-select form-select-lg bg-light border-0 fw-bold" required>
+                        <option value="" selected disabled>Pilih Status...</option>
+                        <option value="H" class="text-success">Hadir (H)</option>
+                        <option value="I" class="text-primary">Izin (I)</option>
+                        <option value="S" class="text-warning">Sakit (S)</option>
+                        <option value="A" class="text-danger">Alpa (A)</option>
+                    </select>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-lg w-100 fw-bold rounded-pill shadow">SIMPAN ABSEN</button>
+                <div class="text-center mt-3"><a href="index.php" class="text-decoration-none text-muted fw-bold">Batal</a></div>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+
+--- C. views/edit_absen.php ---
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <title>Edit Absen</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light py-5">
+    <div class="container">
+        <div class="card border-0 shadow-lg mx-auto rounded-4 p-5" style="max-width: 600px;">
+            <h3 class="fw-bold mb-4 text-warning text-center">Edit Data Kehadiran</h3>
+            <form action="index.php?page=edit" method="POST">
+                
+                <input type="hidden" name="id" value="<?php echo $data_edit['id_absen']; ?>">
+
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label fw-bold small text-muted">Nama Guru</label>
+                        <input type="text" name="guru" class="form-control form-control-lg bg-light border-0" value="<?php echo $data_edit['nama_guru']; ?>" required>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label fw-bold small text-muted">Mata Pelajaran</label>
+                        <input type="text" name="mapel" class="form-control form-control-lg bg-light border-0" value="<?php echo $data_edit['mata_pelajaran']; ?>" required>
+                    </div>
+                </div>
+
+                <div class="mb-4 mt-3 border-top pt-4">
+                    <label class="form-label fw-bold small text-muted">Nama Siswa</label>
+                    <input type="text" name="siswa" class="form-control form-control-lg bg-light border-0" value="<?php echo $data_edit['nama_siswa']; ?>" required>
+                </div>
+
+                <div class="mb-5">
+                    <label class="form-label fw-bold small text-muted">Keterangan (H/I/S/A)</label>
+                    <select name="status" class="form-select form-select-lg bg-light border-0 fw-bold" required>
+                        <option value="H" class="text-success" <?php if($data_edit['status'] == 'H') echo 'selected'; ?>>Hadir (H)</option>
+                        <option value="I" class="text-primary" <?php if($data_edit['status'] == 'I') echo 'selected'; ?>>Izin (I)</option>
+                        <option value="S" class="text-warning" <?php if($data_edit['status'] == 'S') echo 'selected'; ?>>Sakit (S)</option>
+                        <option value="A" class="text-danger" <?php if($data_edit['status'] == 'A') echo 'selected'; ?>>Alpa (A)</option>
+                    </select>
+                </div>
+
+                <button type="submit" class="btn btn-warning btn-lg text-dark w-100 fw-bold rounded-pill shadow">UPDATE DATA</button>
+                <div class="text-center mt-3"><a href="index.php" class="text-decoration-none text-muted fw-bold">Batal</a></div>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+
+
+====================================================================
+LANGKAH 6: ROUTER PUSAT TANPA LOGIN (index.php)
+====================================================================
+Taruh file ini di folder utama `app_absen`. Sangat simpel karena nggak perlu ngurus Session Auth.
+
+<?php
+require_once 'config/database.php';
+require_once 'controllers/AbsensiController.php';
+
+$absen = new AbsensiController($koneksi);
+
+// Router nangkap URL. Kalau kosong, otomatis ke 'dashboard'
+$page = isset($_GET['page']) ?$_GET['page'] : 'dashboard';
+
+switch ($page) {
+    case 'tambah':
+        $absen->form_tambah();
+        break;
+    
+    case 'edit':
+        $absen->form_edit();
+        break;
+    
+    case 'hapus':
+        $absen->aksi_hapus();
+        break;
+
+    case 'dashboard':
+    default:
+        $absen->index();
+        break;
+}
+?>
+====================================================================
+Penjelasan Cepat Alur Tanpa Login:
+Gak Ada Hambatan: User buka localhost/app_absen/index.php, switch case di index.php langsung nembak ke default atau dashboard, lalu manggil $absen->index().
+
+Controller Membaca Data: Controller ngambil semua data absensi dari Model (getAll()) lalu ngirim data itu ke file views/dashboard.php.
+
+Jam Hidup di Dashboard: Di dalam views/dashboard.php, ada <script> JavaScript bernama jalankanJam(). Fungsi ini nggak butuh koneksi server lagi buat berdetak, dia ngambil waktu lokal dari laptop/PC saat web dibuka dan di-update setiap 1000 milidetik (setInterval).
+
+CRUD Mulus: Kalau lu klik edit, form otomatis mendeteksi status H/I/S/A sebelumnya pakai logika if($data_edit['status'] == 'H') echo 'selected';. Begitu disimpan, langsung terlempar balik ke Dashboard dengan SweetAlert keren.
