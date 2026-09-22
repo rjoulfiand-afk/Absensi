@@ -1,0 +1,152 @@
+Paham banget gw cuy! Buat pemula yang baru pindah dari PHP biasa (prosedural) ke PHP MVC, index.php ini emang sering bikin bingung. Kenapa kok semua link harus lewat dia? Kenapa kita nggak langsung aja buka views/dashboard.php?
+
+Sini gw bongkar rahasianya. Lu simpan materi ini sebagai MATERI_MEMAHAMI_INDEX.txt. Kalau lu udah "klik" sama konsep ini, lu bakal ngerasa bikin web MVC itu semudah main Lego!
+
+KONSEP DASAR: index.php = SATPAM PINTU UTAMA 👮‍♂️
+Di PHP biasa (zaman dulu), kalau lu punya 10 halaman, lu punya 10 pintu masuk. User bisa langsung ngetik URL:
+❌ localhost/web/dashboard.php
+❌ localhost/web/tambah_data.php
+Bahayanya: Kalau ada penyusup (hacker), lu harus ngejagain (pasang kode keamanan) di setiap pintu (di tiap file). Ribet!
+
+Di Konsep MVC, kita pakai teknik Front Controller.
+Artinya, kita TUTUP semua pintu lain, dan cuma nyisain 1 PINTU UTAMA, yaitu index.php.
+
+File index.php bertindak sebagai Satpam / Resepsionis.
+
+Semua user WAJIB lapor ke Satpam ini.
+
+Satpam bakal nanya: "Lu mau ke mana?".
+
+Terus Satpam yang bakal milihin Jalan (Controller) mana yang harus dilewatin.
+
+BEDAH ANATOMI index.php BARIS PER BARIS
+Biar super jelas, kita bedah kode standar index.php dari atas sampai bawah.
+
+PHP
+<?php
+// ==========================================
+// BAGIAN 1: PERSIAPAN & PANGGIL BANTUAN
+// ==========================================
+session_start(); 
+require_once 'config/database.php';
+require_once 'controllers/AuthController.php';
+require_once 'controllers/BarangController.php';
+
+// ==========================================
+// BAGIAN 2: BANGUNIN PEGAWAI (INSTANSIASI)
+// ==========================================
+$auth = new AuthController($koneksi);
+$barang = new BarangController($koneksi);
+
+// ==========================================
+// BAGIAN 3: TANYA TUJUAN USER (NANGKAP URL)
+// ==========================================
+$page = isset($_GET['page']) ? $_GET['page'] : '';
+
+// ==========================================
+// BAGIAN 4: PENGATUR LALU LINTAS (ROUTING)
+// ==========================================
+switch ($page) {
+    case 'login': 
+        $auth->login(); 
+        break;
+        
+    case 'dashboard': 
+        if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        require_once 'views/dashboard.php'; 
+        break;
+
+    case 'tambah_barang': 
+        if(!isset($_SESSION['id_user'])) { header("Location: index.php"); exit; }
+        $barang->tambah(); 
+        break;
+
+    default: 
+        if(isset($_SESSION['id_user'])) { header("Location: index.php?page=dashboard"); exit; }
+        $auth->login(); 
+        break;
+}
+?>
+PENJELASAN SUPER RINCI:
+BAGIAN 1: Persiapan
+
+session_start(); 👉 Satpam nyiapin buku tamu. Wajib ditaruh paling atas biar kita bisa ngenalin user yang udah login.
+
+require_once ... 👉 Satpam manggil alat kerjanya (Database) dan manggil ketua tim (Controllers). Ingat, index.php nggak punya logika sendiri, dia cuma butuh bantuan Controller.
+
+BAGIAN 2: Bangunin Pegawai
+
+$barang = new BarangController($koneksi); 👉 File controller itu cuma cetakan (Class). Biar bisa disuruh-suruh, kita harus ubah jadi objek nyata (dibangunin) pakai kata new. Parameter ($koneksi) dikirim biar controller bisa ngobrol sama database.
+
+BAGIAN 3: Tanya Tujuan (KUNCI UTAMA!)
+
+$page = isset($_GET['page']) ? $_GET['page'] : '';
+
+Ini artinya: Satpam ngecek URL di atas browser. Kalau URL-nya index.php?page=tambah_barang, maka nilai $page adalah 'tambah_barang'. Kalau URL-nya cuma index.php doang, nilainya bakal kosong ('').
+
+BAGIAN 4: Pengatur Lalu Lintas (SWITCH-CASE)
+
+Ini adalah peta petunjuk jalan. Satpam mencocokkan nilai $page dengan case.
+
+Kalau $page isinya tambah_barang, Satpam bakal nyari case 'tambah_barang':.
+
+Di dalam case itu, Satpam mengecek: "Eh, lu udah login belum?" (if(!isset($_SESSION['id_user']))). Kalau belum, tendang balik!
+
+Kalau aman, Satpam nyuruh Controller kerja: $barang->tambah();
+
+break; 👉 Perintah berhenti. Biar Satpam nggak kebablasan ngejalanin rute di bawahnya.
+
+default: 👉 Ini rute "Nyasar". Kalau user masukin URL aneh yang nggak ada di daftar (misal: index.php?page=halaman_hantu), Satpam bakal otomatis ngejalanin kode di default (biasanya dilempar ke login).
+
+SIMULASI ALUR KERJA (BAGAIMANA DATA BERGERAK)
+Biar lu makin kebayang, ini simulasi real-time waktu lu ngeklik tombol di dalam web lu:
+
+Skenario: Lu klik tombol <a href="index.php?page=tambah_barang">Tambah</a> di halaman dashboard.
+
+Browser mengirim Request ke server minta dibukain file index.php sambil bawa pesan rahasia: page=tambah_barang.
+
+index.php (Satpam) bangun dari tidur. Dia baca dari atas sampai bawah:
+
+Nyalain Session ✅
+
+Panggil koneksi dan Controller ✅
+
+Bangunin objek Controller ✅
+
+Satpam menangkap pesan: "Oh, URL-nya bawa ?page=tambah_barang".
+
+Satpam turun ke area Switch-Case. Dia nyari ruangan yang namanya case 'tambah_barang':. Ketemu!
+
+Satpam ngecek keamanan: "Apakah ada Session (udah login)?". Ada! Lanjut!
+
+Satpam ngasih perintah: $barang->tambah(); "Woi BarangController, tolong jalanin fungsi tambah() sekarang!"
+
+Pindah ke BarangController.php: Controller mengambil alih tugas. Dia nampilin file HTML views/form_tambah.php ke layar browser lu.
+
+Selesai! Mata user ngelihat halaman form tambah barang terbuka.
+
+KESALAHAN FATAL YANG SERING TERJADI DI index.php (WARNING! ⚠️)
+Kalau lu pas ujian ngalamin error, biasanya karena 3 hal sepele ini bro:
+
+Error: "Header already sent by..."
+
+Penyebab: Lu naruh spasi kosong, enter berlebih, atau tag HTML sebelum kode <?php atau sebelum fungsi session_start();. Atau lu ngetik echo "Halo" sebelum header("Location:...").
+
+Solusi: Pastikan <?php ada di baris nomer 1, mentok kiri atas, nggak ada spasi sama sekali sebelumnya.
+
+Error: Blank Page / Halaman Putih / "Call to a member function on null"
+
+Penyebab: Lu lupa nge-load file Controller-nya (lupa nulis require_once) ATAU lu lupa nge-bangunin objeknya ($barang = new BarangController...).
+
+Solusi: Cek ulang Bagian 1 dan Bagian 2 di index.php lu.
+
+Gagal Pindah Halaman padahal URL berubah
+
+Penyebab: Di switch-case, lu lupa nulis break;. Akibatnya, kodenya bocor ke bawah dan menumpuk dengan eksekusi rute lain.
+
+Solusi: Pastikan tiap akhir case wajib diakhiri dengan break;. Kecuali case yang emang sengaja digabung bertumpuk.
+
+INTINYA BRO:
+index.php itu cuma "Terminal Penghubung". Dia nggak mikirin cara insert ke database, dia nggak mikirin desain tombol Bootstrap. Kerjaannya murni cuma: Nerima Request URL -> Cek Keamanan Session -> Lempar ke Controller.
+
+Pahami konsep ini, lu merem pun bisa ngerakit aplikasi MVC apapun besok. Semangat belajarnya, gas sikat ujiannya! 🔥
